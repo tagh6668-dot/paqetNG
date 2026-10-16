@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.2.0]
+
+### Feat
+- Mobile data support: paqet core runs on rmnet/ccmni (Raw IP, no Ethernet header, no router MAC required)
+- Auto iptables anti-RST rule (v4+v6) on connect, removed on disconnect — no Termux needed
+- Point paqet submodule to tagh6668-dot/paqet (RawIP core + 0x50 wire format, latest upstream)
+
+### Fix
+- Cellular fallback no longer emits placeholder MAC 00:00:00:00:00:00 (empty router_mac = RawIP mode)
+- Wire-format compat: core synced past alpha.19 to the 0x50 magic-byte protocol
+
 ## [v1.1.0]
 
 ### Chore
