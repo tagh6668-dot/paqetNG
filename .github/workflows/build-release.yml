@@ -12,6 +12,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -62,7 +64,7 @@ jobs:
       # On tag push: decode keystore from secret so Gradle can sign release APKs.
       # Skipped when the secret is not set (then APKs build unsigned).
       - name: Prepare signing keystore (tag only)
-        if: startsWith(github.ref, 'refs/tags/') && secrets.ANDROID_KEYSTORE_BASE64 != ''
+        if: startsWith(github.ref, 'refs/tags/') && env.HAS_KEYSTORE == 'true'
         run: |
           mkdir -p signing
           echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > signing/release.keystore
