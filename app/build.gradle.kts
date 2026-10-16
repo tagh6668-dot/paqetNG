@@ -327,13 +327,13 @@ fun getVersionCode(): Int {
 }
 
 android {
-    namespace = "com.alirezabeigy.paqetng"
+    namespace = "com.tagh6668.paqetng"
     compileSdk {
         version = release(36)
     }
 
     defaultConfig {
-        applicationId = "com.alirezabeigy.paqetng"
+        applicationId = "com.tagh6668.paqetng"
         minSdk = 24
         targetSdk = 36
         versionCode = getVersionCode()

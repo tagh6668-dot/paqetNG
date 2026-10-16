@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.2.1]
+
+### Feat
+- New package name: com.tagh6668.paqetng (rebrand from com.alirezabeigy.paqetng)
+- New launcher icon: gift-box on purple-to-blue gradient
+- Fixed release signing with bundled keystore secret (signed APKs)
+
 ## [v1.2.0]
 
 ### Feat
