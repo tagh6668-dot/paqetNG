@@ -37,6 +37,75 @@ class PaqetRunner(
     private var lastConfigYaml: String? = null
     private var lastSessionSummary: String? = null
 
+    /**
+     * Raw TCP port paqet sniffs on (parsed from ipv4Addr "IP:port").
+     * Used for the anti-RST iptables rule; cleared on [stop()].
+     */
+    private var lastRawPort: Int? = null
+
+    /**
+     * Serial executor for firewall ops: install/remove run off the main thread
+     * (each `su` can take ~200ms) but strictly in call order, so a
+     * remove-then-install sequence during restart cannot be reordered.
+     */
+    private val fwExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "paqet-fw").apply { isDaemon = true }
+    }
+
+    /**
+     * Installs an iptables rule that drops kernel-generated TCP RST packets
+     * for [port]: the kernel sees paqet's raw SYN-ACKs as unsolicited and
+     * RSTs them, killing connections. Requires root. Best-effort: logs on failure.
+     */
+    private fun installAntiRstRuleBlocking(port: Int) {
+        runSuBlocking(
+            "iptables -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || " +
+                "iptables -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP",
+            tag = "anti-rst install (port=$port)"
+        )
+        runSuBlocking(
+            "ip6tables -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || " +
+                "ip6tables -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP",
+            tag = "anti-rst install v6 (port=$port)"
+        )
+    }
+
+    /** Removes the anti-RST iptables rule installed by [installAntiRstRuleBlocking]. */
+    private fun removeAntiRstRuleBlocking(port: Int) {
+        runSuBlocking(
+            "iptables -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null; true",
+            tag = "anti-rst remove (port=$port)"
+        )
+        runSuBlocking(
+            "ip6tables -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null; true",
+            tag = "anti-rst remove v6 (port=$port)"
+        )
+    }
+
+    /** Runs a root shell command on a background-safe blocking call; returns stdout or null. */
+    private fun runSuBlocking(cmd: String, tag: String): String? {
+        return try {
+            val p = ProcessBuilder("su", "-c", cmd)
+                .redirectErrorStream(true)
+                .start()
+            val out = p.inputStream.bufferedReader().readText()
+            val exit = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                p.waitFor(5, TimeUnit.SECONDS)
+            } else {
+                val t = Thread { p.waitFor() }
+                t.start()
+                t.join(5000)
+                !t.isAlive
+            }
+            p.destroy()
+            logBuffer?.append(AppLogBuffer.TAG_SESSION, "$tag: exit=$exit ${out.take(200)}")
+            if (exit) out else null
+        } catch (e: Exception) {
+            logBuffer?.append(AppLogBuffer.TAG_SESSION, "$tag failed: ${e.message}")
+            null
+        }
+    }
+
     /** Called when paqet exits unexpectedly (crash). Arguments are last config for restart. */
     var onCrashed: ((configYaml: String, sessionSummary: String?) -> Unit)? = null
 
@@ -168,6 +237,12 @@ class PaqetRunner(
         killAnyExistingPaqetBlocking()
         lastConfigYaml = configYaml
         lastSessionSummary = sessionSummary
+        // Parse raw port ("IP:port" in ipv4.addr) for the anti-RST iptables rule.
+        lastRawPort = Regex("""addr:\s*"[^"]*:(\d+)"""").find(configYaml)
+            ?.groupValues?.get(1)?.toIntOrNull()
+            ?.takeIf { it in 1..65535 }
+        val fwPort = lastRawPort
+        if (fwPort != null) fwExecutor.execute { installAntiRstRuleBlocking(fwPort) }
         val configFile = File(paqetDir, "config_run.yaml")
         return try {
             configFile.writeText(configYaml)
@@ -231,6 +306,9 @@ class PaqetRunner(
         stopRequested = true
         lastConfigYaml = null
         lastSessionSummary = null
+        val fwPort = lastRawPort
+        lastRawPort = null
+        if (fwPort != null) fwExecutor.execute { removeAntiRstRuleBlocking(fwPort) }
         val p = process
         process = null
         _isRunning.value = false

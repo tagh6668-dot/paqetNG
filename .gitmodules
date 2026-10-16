@@ -4,6 +4,6 @@
 	active = true
 [submodule "paqet"]
 	path = paqet
-	url = https://github.com/hanselime/paqet
+	url = https://github.com/tagh6668-dot/paqet.git
 	active = true
 	branch = master

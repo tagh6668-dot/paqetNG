@@ -96,12 +96,16 @@ class DefaultNetworkInfoProvider(private val context: Context) {
             return null
         }
         val ipv4Addr = "$srcIp:0"
+        // Cellular (rmnet/ccmni) has no gateway MAC (Raw IP / layer-3 only).
+        // Return empty so YAML emits router_mac: "" and paqet runs in RawIP mode.
+        // Never emit a placeholder MAC here: ParseMAC("00:00:...") succeeds and
+        // would wrongly disable RawIP mode in the core.
         val gatewayIp = viaMatch?.groupValues?.get(1) ?: ""
         val routerMac = if (gatewayIp.isNotBlank()) {
             readMacFromArpViaRoot(gatewayIp) ?: ""
         } else {
             ""
-        }.ifEmpty { "00:00:00:00:00:00" }
+        }
         Log.d(TAG, "getDefaultNetworkInfoViaRoot: iface=$iface ipv4=$ipv4Addr routerMac=$routerMac (cellular fallback)")
         return DefaultNetworkInfo(iface, ipv4Addr, routerMac)
     }
