@@ -5,11 +5,11 @@ All notable changes to this project will be documented in this file.
 ## [v1.2.7]
 
 ### Fix
-- IPv6 raw send: fix `IPV6_HDRINCL` (was 51/`IPV6_RECVHOPLIMIT`, now 36 via `unix.IPV6_HDRINCL`) — `sendto(AF_INET6,SOCK_RAW,IPPROTO_RAW)` returned `EINVAL` so no IPv6 packet ever left `ccmni1` (strace `sendto` EINVAL). Now `PA` on `[2a14:7981:467:9f7::1]:28443` works.
+- IPv6 raw send: fix `IPV6_HDRINCL` (was 51/`IPV6_RECVHOPLIMIT`, now 36 via `unix.IPV6_HDRINCL`) and `Sendto` port (was non-zero → `EINVAL` on 4.19; now `0` with port inside TCP header) — `sendto(AF_INET6,SOCK_RAW,IPPROTO_RAW)` returned `EINVAL` so no IPv6 packet ever left `ccmni1` (harness+strace `sendto EINVAL`). Now `PA` on `[2a14:7981:467:9f7::1]:28443` works.
 - App startup: `PaqetConfig.ipv6Addr` NPE on old DataStore configs (Gson null bypass) — make nullable + safe `withDefaults()` (v1.2.6 hotfix included).
 
 ### Feat
-- Dual-stack: when `serverAddr` is `[2a14::1]:28443`, emit `network.ipv6` block on `ccmni1` (`[2a03:...]:0`); IPv4 unchanged. Core now on `f7eaa9c`.
+- Dual-stack: when `serverAddr` is `[2a14::1]:28443`, emit `network.ipv6` block on `ccmni1` (`[2a03:...]:0`); IPv4 unchanged. Core now on `5078b3f`.
 
 ## [v1.2.6]
 
