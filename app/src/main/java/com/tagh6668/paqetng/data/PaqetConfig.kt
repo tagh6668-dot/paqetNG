@@ -46,7 +46,7 @@ data class PaqetConfig(
     val serverAddr: String,
     val networkInterface: String,
     val ipv4Addr: String,
-    val ipv6Addr: String = "",
+    val ipv6Addr: String? = "",
     val routerMac: String,
     val kcpKey: String,
     val kcpBlock: String = KcpBlockOptions.default,
@@ -83,26 +83,44 @@ data class PaqetConfig(
      * Handles cases where Gson may set non-nullable fields to null at runtime.
      */
     fun withDefaults(): PaqetConfig {
+        // Gson bypasses Kotlin defaults and can leave any String field as null for old JSON.
+        // Coerce nulls to safe defaults so copy() (non-null params) never NPEs.
+        val safeId = try { id ?: "" } catch (_: Exception) { "" }
+        val safeName = try { name ?: "" } catch (_: Exception) { "" }
+        val safeServerAddr = try { serverAddr ?: "" } catch (_: Exception) { "" }
+        val safeNetworkInterface = try { networkInterface ?: "wlan0" } catch (_: Exception) { "wlan0" }
+        val safeIpv4Addr = try { ipv4Addr ?: "" } catch (_: Exception) { "" }
+        val safeIpv6Addr: String? = try { ipv6Addr } catch (_: Exception) { null }
+        val safeRouterMac = try { routerMac ?: "" } catch (_: Exception) { "" }
+        val safeKcpKey = try { kcpKey ?: "" } catch (_: Exception) { "" }
         val safeKcpMode = try {
             val mode = kcpMode
-            if (mode.isEmpty() || mode !in KcpModeOptions.all) KcpModeOptions.DEFAULT else mode
+            if (mode.isNullOrEmpty() || mode !in KcpModeOptions.all) KcpModeOptions.DEFAULT else mode
         } catch (_: Exception) {
             KcpModeOptions.DEFAULT
         }
         val safeKcpBlock = try {
             val block = kcpBlock
-            if (block.isEmpty() || block !in KcpBlockOptions.all) KcpBlockOptions.default else block
+            if (block.isNullOrEmpty() || block !in KcpBlockOptions.all) KcpBlockOptions.default else block
         } catch (_: Exception) {
             KcpBlockOptions.default
         }
         val safeSocksListen = try {
             val listen = socksListen
-            listen.ifEmpty { "127.0.0.1:1284" }
+            if (listen.isNullOrEmpty()) "127.0.0.1:1284" else listen
         } catch (_: Exception) {
             "127.0.0.1:1284"
         }
         val isManualMode = safeKcpMode == "manual"
         return copy(
+            id = safeId,
+            name = safeName,
+            serverAddr = safeServerAddr,
+            networkInterface = safeNetworkInterface,
+            ipv4Addr = safeIpv4Addr,
+            ipv6Addr = safeIpv6Addr ?: "",
+            routerMac = safeRouterMac,
+            kcpKey = safeKcpKey,
             conn = if (conn !in 1..256) 1 else conn,
             kcpMode = safeKcpMode,
             mtu = if (mtu <= 0 || mtu < 50 || mtu > 1500) 1350 else mtu,

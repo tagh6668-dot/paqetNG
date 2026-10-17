@@ -40,7 +40,7 @@ fun PaqetConfig.toPaqetYaml(logLevel: String = "debug"): String {
     val networkBlock = if (useIpv6) {
         // Prefer ipv6Addr from provider; fall back to bracketed ipv4Addr if caller stashed it there
         val ipv6Source = when {
-            ipv6Addr.isNotBlank() -> ipv6Addr.trim()
+            !ipv6Addr.isNullOrBlank() -> ipv6Addr!!.trim()
             ipv4Addr.trim().startsWith("[") -> ipv4Addr.trim()
             else -> ""
         }
