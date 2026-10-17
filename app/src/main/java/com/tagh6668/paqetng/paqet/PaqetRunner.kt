@@ -132,19 +132,24 @@ class PaqetRunner(
     /**
      * Copies the paqet binary from assets to app filesDir and makes it executable.
      * Prefers ABI-specific asset (arm64-v8a/paqet, armeabi-v7a/paqet) when built from submodule; else uses "paqet".
-     * Safe to call multiple times; overwrites if already present.
+     * Always ensures the on-disk binary matches the APK asset (fixes stale binary after APK update —
+     * old code returned early if file existed, so new APK never took effect).
      */
     fun ensureBinary(): Boolean {
-        if (binaryFile.exists()) {
-            return binaryFile.canExecute()
-        }
         return try {
             val assetPath = getPaqetAssetPath()
-            context.assets.open(assetPath).use { input ->
-                binaryFile.outputStream().use { output ->
-                    input.copyTo(output)
+            // Read asset bytes first so we can compare with existing file
+            val assetBytes = context.assets.open(assetPath).use { it.readBytes() }
+            if (binaryFile.exists() && binaryFile.canExecute() && binaryFile.length() == assetBytes.size.toLong()) {
+                // Quick size check passed — verify content to avoid stale binary after update
+                val onDisk = try { binaryFile.readBytes() } catch (_: Exception) { null }
+                if (onDisk != null && onDisk.contentEquals(assetBytes)) {
+                    return true
                 }
             }
+            // (Re)write — covers first install and stale-binary-after-update
+            binaryFile.parentFile?.mkdirs()
+            binaryFile.outputStream().use { it.write(assetBytes) }
             binaryFile.setExecutable(true, false)
             true
         } catch (e: IOException) {
