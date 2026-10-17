@@ -46,6 +46,7 @@ data class PaqetConfig(
     val serverAddr: String,
     val networkInterface: String,
     val ipv4Addr: String,
+    val ipv6Addr: String = "",
     val routerMac: String,
     val kcpKey: String,
     val kcpBlock: String = KcpBlockOptions.default,

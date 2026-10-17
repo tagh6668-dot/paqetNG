@@ -9,6 +9,9 @@ private fun List<String>.toTcpFlagYaml(): String =
     if (isEmpty()) "[ \"$DEFAULT_TCP_FLAGS\" ]"
     else joinToString(", ") { "\"${it.trim()}\"" }.let { "[ $it ]" }
 
+/** True when server is IPv6 (brackets). Host part contains ':'. */
+private fun isIpv6Server(serverAddr: String): Boolean = serverAddr.trim().startsWith("[")
+
 fun PaqetConfig.toPaqetYaml(logLevel: String = "debug"): String {
     val localList = localFlag?.takeIf { it.isNotEmpty() } ?: listOf(DEFAULT_TCP_FLAGS)
     val remoteList = remoteFlag?.takeIf { it.isNotEmpty() } ?: listOf(DEFAULT_TCP_FLAGS)
@@ -31,6 +34,28 @@ fun PaqetConfig.toPaqetYaml(logLevel: String = "debug"): String {
             append("\n    acknodelay: $acknodelay")
         }
     }
+    // Emit ipv6 block when server is IPv6, otherwise ipv4. Paqet validates that the matching
+    // family is configured: "server address is IPv6, but the IPv6 interface is not configured".
+    val useIpv6 = isIpv6Server(serverAddr)
+    val networkBlock = if (useIpv6) {
+        // Prefer ipv6Addr from provider; fall back to bracketed ipv4Addr if caller stashed it there
+        val ipv6Source = when {
+            ipv6Addr.isNotBlank() -> ipv6Addr.trim()
+            ipv4Addr.trim().startsWith("[") -> ipv4Addr.trim()
+            else -> ""
+        }
+        // If still empty (e.g. old cached config), keep placeholder so error is explicit; caller should refresh.
+        val addrVal = if (ipv6Source.isNotEmpty()) ipv6Source else "[::]:0"
+        """  interface: "$networkInterface"
+  ipv6:
+    addr: "$addrVal"
+    router_mac: "$routerMac""""
+    } else {
+        """  interface: "$networkInterface"
+  ipv4:
+    addr: "$ipv4Addr"
+    router_mac: "$routerMac""""
+    }
     return """
 role: "client"
 log:
@@ -40,10 +65,7 @@ socks5:
     username: ""
     password: ""
 network:
-  interface: "$networkInterface"
-  ipv4:
-    addr: "$ipv4Addr"
-    router_mac: "$routerMac"
+$networkBlock
   tcp:
     local_flag: $localFlagYaml
     remote_flag: $remoteFlagYaml

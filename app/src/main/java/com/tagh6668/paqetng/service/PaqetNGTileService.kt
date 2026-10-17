@@ -122,6 +122,7 @@ class PaqetNGTileService : TileService() {
                 config.copy(
                     networkInterface = info.interfaceName,
                     ipv4Addr = info.ipv4Addr,
+                    ipv6Addr = info.ipv6Addr,
                     routerMac = info.routerMac,
                     socksListen = socksListen
                 )

@@ -122,6 +122,7 @@ class HomeViewModel(
                 serverAddr = "",
                 networkInterface = "wlan0",
                 ipv4Addr = "",
+                ipv6Addr = "",
                 routerMac = "",
                 kcpKey = "",
                 kcpBlock = KcpBlockOptions.default,
@@ -131,6 +132,7 @@ class HomeViewModel(
             _editorConfig.value = (_editorConfig.value ?: return@launch).copy(
                 networkInterface = info.interfaceName,
                 ipv4Addr = info.ipv4Addr,
+                ipv6Addr = info.ipv6Addr,
                 routerMac = info.routerMac
             )
         }
@@ -189,13 +191,14 @@ class HomeViewModel(
                 config.copy(
                     networkInterface = info.interfaceName,
                     ipv4Addr = info.ipv4Addr,
+                    ipv6Addr = info.ipv6Addr,
                     routerMac = info.routerMac,
                     socksListen = socksListen
                 )
             } else {
                 config.copy(socksListen = socksListen)
             })
-            val summary = "server=${configWithNetwork.serverAddr} iface=${configWithNetwork.networkInterface} ip=${configWithNetwork.ipv4Addr} routerMac=${configWithNetwork.routerMac} socks=${configWithNetwork.socksListen}"
+            val summary = "server=${configWithNetwork.serverAddr} iface=${configWithNetwork.networkInterface} ip=${configWithNetwork.ipv4Addr} ipv6=${configWithNetwork.ipv6Addr} routerMac=${configWithNetwork.routerMac} socks=${configWithNetwork.socksListen}"
             val started = paqetRunner.startWithYaml(configWithNetwork.toPaqetYaml(logLevel = logLevel), summary)
             if (started) {
                 _connectedConfigId.value = config.id

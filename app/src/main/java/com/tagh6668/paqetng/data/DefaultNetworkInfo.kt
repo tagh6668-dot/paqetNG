@@ -9,17 +9,20 @@ import java.io.File
 import java.net.Inet4Address
 
 /**
- * Detected default network info: interface name, device IPv4 (with :0 for paqet), and gateway MAC.
+ * Detected default network info: interface name, device IPv4/IPv6 (with :0 for paqet), and gateway MAC.
+ * [ipv4Addr] is "IP:0" (e.g. "10.0.0.2:0"), [ipv6Addr] is "[IP]:0" bracketed (e.g. "[2a03:...]:0") or "" if no global IPv6.
  */
 data class DefaultNetworkInfo(
     val interfaceName: String,
     val ipv4Addr: String,
+    val ipv6Addr: String = "",
     val routerMac: String
 )
 
 /**
- * Fetches the current default network's interface name, IPv4 address, and gateway MAC.
+ * Fetches the current default network's interface name, IPv4/IPv6 addresses, and gateway MAC.
  * Uses ConnectivityManager + LinkProperties; gateway MAC is read from /proc/net/arp.
+ * For IPv6: scans linkAddresses for a non-link-local Inet6Address and returns it as "[IP]:0".
  */
 class DefaultNetworkInfoProvider(private val context: Context) {
 
@@ -41,17 +44,22 @@ class DefaultNetworkInfoProvider(private val context: Context) {
                 ?.hostAddress
                 ?: return@withContext getDefaultNetworkInfoViaRoot()
             val ipv4Addr = "$ipv4:0"
+            // IPv6 on same interface: first global (non-link-local) Inet6Address
+            val ipv6Host = lp.linkAddresses
+                .mapNotNull { la -> la.address as? java.net.Inet6Address }
+                .firstOrNull { !it.isLinkLocalAddress }?.hostAddress
+            val ipv6Addr = if (ipv6Host != null) "[$ipv6Host]:0" else resolveIpv6ForInterface(interfaceName)
             val gateway = lp.routes
                 .firstOrNull { it.gateway != null && it.isDefaultRoute && it.gateway is Inet4Address }
                 ?.gateway
                 ?: lp.routes.firstOrNull { it.gateway != null && it.gateway is Inet4Address }?.gateway
             val gatewayIp = gateway?.hostAddress ?: ""
-            Log.d(TAG, "gatewayIp=$gatewayIp")
+            Log.d(TAG, "gatewayIp=$gatewayIp ipv6Addr=$ipv6Addr")
             val routerMacFromFile = readMacFromArp(gatewayIp)
             val routerMacFromRoot = if (routerMacFromFile == null) readMacFromArpViaRoot(gatewayIp) else null
             val routerMac = routerMacFromFile ?: routerMacFromRoot ?: ""
             Log.d(TAG, "routerMac: fromFile=$routerMacFromFile fromRoot=$routerMacFromRoot final=$routerMac")
-            DefaultNetworkInfo(interfaceName, ipv4Addr, routerMac)
+            DefaultNetworkInfo(interfaceName, ipv4Addr, ipv6Addr, routerMac)
         } ?: getDefaultNetworkInfoViaRoot()
     }
 
@@ -134,8 +142,36 @@ class DefaultNetworkInfoProvider(private val context: Context) {
         } else {
             ""
         }
-        Log.d(TAG, "getDefaultNetworkInfoViaRoot: iface=$iface ipv4=$ipv4Addr routerMac=$routerMac (cellular fallback)")
-        return DefaultNetworkInfo(iface, ipv4Addr, routerMac)
+        val ipv6Addr = resolveIpv6ViaRoot(iface)
+        Log.d(TAG, "getDefaultNetworkInfoViaRoot: iface=$iface ipv4=$ipv4Addr ipv6=$ipv6Addr routerMac=$routerMac (cellular fallback)")
+        return DefaultNetworkInfo(iface, ipv4Addr, ipv6Addr, routerMac)
+    }
+
+    private fun resolveIpv6ForInterface(iface: String): String {
+        val cmdOut = runSuCommand("ip -6 addr show dev $iface") ?: return ""
+        return parseIpv6FromAddrShow(cmdOut)
+    }
+
+    private fun resolveIpv6ViaRoot(iface: String): String {
+        val out = runSuCommand("ip -6 addr show dev $iface") ?: return ""
+        return parseIpv6FromAddrShow(out)
+    }
+
+    private fun parseIpv6FromAddrShow(output: String): String {
+        // lines like: "    inet6 2a03:ef43:b:8464:1:1:df66:94b5/64 scope global ..."
+        for (line in output.lines()) {
+            val trimmed = line.trim()
+            if (!trimmed.startsWith("inet6")) continue
+            // skip link-local fe80:: and scope link
+            if (trimmed.contains("scope link")) continue
+            val m = Regex("""inet6\s+([0-9a-fA-F:]+)""").find(trimmed) ?: continue
+            val ip = m.groupValues[1]
+            if (ip.startsWith("fe80:")) continue
+            if (ip == "::1") continue
+            // Must be global
+            return "[$ip]:0"
+        }
+        return ""
     }
 
     /** Probe physical egress interfaces (ccmni/rmnet/wlan) that can actually reach 8.8.8.8. */
