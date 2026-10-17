@@ -62,22 +62,37 @@ class DefaultNetworkInfoProvider(private val context: Context) {
      */
     private fun getDefaultNetworkInfoViaRoot(): DefaultNetworkInfo? {
         // ip route get 8.8.8.8 → e.g. "8.8.8.8 from 10.0.0.1 dev rmnet_data0 src 10.0.0.2 uid 0"
-        val routeOut = runSuCommand("ip route get 8.8.8.8")
+        // When VPN (tun0) is up, this returns tun0 with the VPN IP — which is wrong for paqet's
+        // raw socket (needs the underlying physical interface like ccmni/rmnet/wlan).
+        // So we detect virtual interfaces and probe the real egress interface.
+        var routeOut = runSuCommand("ip route get 8.8.8.8")
         if (routeOut.isNullOrBlank()) {
             Log.w(TAG, "getDefaultNetworkInfoViaRoot: ip route get 8.8.8.8 returned empty")
             return null
         }
         Log.d(TAG, "getDefaultNetworkInfoViaRoot: route output=$routeOut")
-        val devMatch = Regex("""\bdev\s+(\S+)""").find(routeOut)
-        val srcMatch = Regex("""\bsrc\s+(\S+)""").find(routeOut)
-        val viaMatch = Regex("""\bvia\s+(\S+)""").find(routeOut)
-        val iface = devMatch?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
-            ?: run {
+        var devMatch = Regex("""\bdev\s+(\S+)""").find(routeOut)
+        var srcMatch = Regex("""\bsrc\s+(\S+)""").find(routeOut)
+        var viaMatch = Regex("""\bvia\s+(\S+)""").find(routeOut)
+        var iface = devMatch?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
+        val isVirtual = iface != null && (iface == "tun0" || iface.startsWith("tun") || iface.startsWith("dummy") || iface == "lo")
+        if (isVirtual || iface.isNullOrBlank()) {
+            Log.d(TAG, "getDefaultNetworkInfoViaRoot: route dev is virtual ($iface), probing physical interfaces")
+            val probed = probePhysicalInterface()
+            if (probed != null) {
+                Log.d(TAG, "getDefaultNetworkInfoViaRoot: probed physical iface=${probed.first} ip=${probed.second}")
+                iface = probed.first
+                srcMatch = Regex("""\bsrc\s+(\S+)""").find("src ${probed.second}")
+                val probeRoute = runSuCommand("ip route get 8.8.8.8 from ${probed.second} oif $iface")
+                Log.d(TAG, "getDefaultNetworkInfoViaRoot: probe route=$probeRoute")
+                viaMatch = probeRoute?.let { Regex("""\bvia\s+(\S+)""").find(it) }
+            } else {
                 val defaultRoute = runSuCommand("ip route show default")
-                defaultRoute?.let { line ->
-                    Regex("""default\s+via\s+\S+\s+dev\s+(\S+)""").find(line)?.groupValues?.get(1)
-                }
+                iface = defaultRoute?.lines()?.firstNotNullOfOrNull { line ->
+                    Regex("""default\s+via\s+\S+\s+dev\s+(\S+)""").find(line)?.groupValues?.get(1)?.takeIf { it != "tun0" && !it.startsWith("tun") }
+                } ?: iface
             }
+        }
         if (iface.isNullOrBlank()) {
             Log.w(TAG, "getDefaultNetworkInfoViaRoot: could not parse interface from route")
             return null
@@ -88,6 +103,19 @@ class DefaultNetworkInfoProvider(private val context: Context) {
             addrOut?.let { output ->
                 Regex("""inet\s+(\d+\.\d+\.\d+\.\d+)""").find(output)?.let { m ->
                     srcIp = m.groupValues[1]
+                }
+            }
+        }
+        // Validate: iface we picked must actually have that IP; stale ccmni0 has no IP
+        if (!srcIp.isNullOrBlank()) {
+            val validateAddr = runSuCommand("ip -4 addr show dev $iface")
+            val hasIp = validateAddr?.contains(srcIp!!) == true
+            if (!hasIp) {
+                Log.w(TAG, "getDefaultNetworkInfoViaRoot: stale iface $iface does not have ip $srcIp, re-probing")
+                val probed = probePhysicalInterface()
+                if (probed != null) {
+                    iface = probed.first
+                    srcIp = probed.second
                 }
             }
         }
@@ -108,6 +136,38 @@ class DefaultNetworkInfoProvider(private val context: Context) {
         }
         Log.d(TAG, "getDefaultNetworkInfoViaRoot: iface=$iface ipv4=$ipv4Addr routerMac=$routerMac (cellular fallback)")
         return DefaultNetworkInfo(iface, ipv4Addr, routerMac)
+    }
+
+    /** Probe physical egress interfaces (ccmni/rmnet/wlan) that can actually reach 8.8.8.8. */
+    private fun probePhysicalInterface(): Pair<String, String>? {
+        val addrShow = runSuCommand("ip -o -4 addr show") ?: return null
+        Log.d(TAG, "probePhysicalInterface: addrShow=${addrShow.take(800)}")
+        val candidates = mutableListOf<Pair<String, String>>()
+        for (line in addrShow.lines()) {
+            val m = Regex("""\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)""").find(line) ?: continue
+            val iface = m.groupValues[1]
+            val ip = m.groupValues[2]
+            if (iface.startsWith("tun") || iface.startsWith("dummy") || iface == "lo") continue
+            candidates.add(iface to ip)
+        }
+        val sorted = candidates.sortedWith(compareBy(
+            { when {
+                it.first.startsWith("ccmni") || it.first.startsWith("rmnet") -> 0
+                it.first.startsWith("wlan") -> 1
+                else -> 2
+            }},
+            { it.first }
+        ))
+        for ((iface, ip) in sorted) {
+            val out = runSuCommand("ip route get 8.8.8.8 from $ip oif $iface")
+            if (!out.isNullOrBlank() && !out.contains("No route to host") && !out.contains("Network is unreachable")) {
+                Log.d(TAG, "probePhysicalInterface: candidate $iface $ip reachable: $out")
+                return iface to ip
+            } else {
+                Log.d(TAG, "probePhysicalInterface: candidate $iface $ip not reachable: ${out?.take(200)}")
+            }
+        }
+        return null
     }
 
     private fun readMacFromArp(ip: String): String? {
