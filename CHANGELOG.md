@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.2.9]
+
+### Fix
+- `ccmni` `ARPHRD 519` on MCI (MTK): libpcap `arptype 519 not supported — falling back to cooked socket` was treated as hard error, aborting `PacketConn` on `ccmni1` (diag `pcap activate err Warning: arptype 519…` with empty capture). Now treat warning as success (fallback `SLL`) and handle `LT 519/0` as cooked raw-IP. Core now on `92f5d35`.
+
+## [v1.2.8]
+
+### Fix
+- IPv6 `Sendto` `port 0` with `IPV6_HDRINCL`: `AF_INET6+SOCK_RAW+IPPROTO_RAW+IPV6_HDRINCL` on 4.19 expects `sin6_port=0` — port is inside TCP header. Non-zero triggered `EINVAL` (harness+strace proof), so `PA` on `[2a14::1]:28443` never left `ccmni1`. Core `5078b3f` (also includes `IPV6_HDRINCL` 51→36).
+
 ## [v1.2.7]
 
 ### Fix
