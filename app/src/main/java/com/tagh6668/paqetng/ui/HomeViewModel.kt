@@ -17,25 +17,24 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
+import android.content.Context
 import android.util.Log
+import com.tagh6668.paqetng.paqet.RealDelayTester
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Proxy
-import java.net.Socket
 import java.net.URL
 
 class HomeViewModel(
     private val configRepository: ConfigRepository,
     private val paqetRunner: PaqetRunner,
     private val defaultNetworkInfoProvider: DefaultNetworkInfoProvider,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val appContext: Context
 ) : ViewModel() {
 
     private companion object {
@@ -62,15 +61,11 @@ class HomeViewModel(
     private val _latencyTesting = MutableStateFlow(false)
     val latencyTesting: StateFlow<Boolean> = _latencyTesting.asStateFlow()
 
-    // --- Test Real Delays (batch) ---
-    private val _realDelayResults = MutableStateFlow<Map<String, Int>>(emptyMap())
-    val realDelayResults: StateFlow<Map<String, Int>> = _realDelayResults.asStateFlow()
-
-    private val _realDelayTestingIds = MutableStateFlow<Set<String>>(emptySet())
-    val realDelayTestingIds: StateFlow<Set<String>> = _realDelayTestingIds.asStateFlow()
-
-    private val _batchTesting = MutableStateFlow(false)
-    val batchTesting: StateFlow<Boolean> = _batchTesting.asStateFlow()
+    // --- Test Real Delays (batch) — isolated parallel tester (does not touch main PaqetRunner) ---
+    private val realDelayTester = RealDelayTester(appContext, defaultNetworkInfoProvider)
+    val realDelayResults: StateFlow<Map<String, Int>> = realDelayTester.results
+    val realDelayTestingIds: StateFlow<Set<String>> = realDelayTester.testingIds
+    val batchTesting: StateFlow<Boolean> = realDelayTester.isTesting
 
     private var batchJob: Job? = null
 
@@ -303,144 +298,38 @@ class HomeViewModel(
         }
     }
 
-    /** Test real delays for ALL configs sequentially via actual paqet SOCKS. */
+    /** Test real delays for ALL configs in parallel (10 at a time) via isolated paqet instances. Does not touch main VPN. Timeout from Settings. */
     fun testRealDelays() {
-        if (_batchTesting.value) return
-        if (paqetRunner.isRunning.value) {
-            Log.w(TAG, "testRealDelays: abort, paqet is running (connected)")
-            return
-        }
+        if (batchTesting.value) return
         batchJob?.cancel()
         batchJob = viewModelScope.launch {
-            Log.d(TAG, "testRealDelays: starting batch")
-            _batchTesting.value = true
-            _realDelayTestingIds.value = emptySet()
-            _realDelayResults.value = emptyMap()
+            Log.d(TAG, "testRealDelays: starting batch (parallel x${RealDelayTester.CONCURRENCY})")
             val snapshot = configRepository.configs.first()
             if (snapshot.isEmpty()) {
                 Log.d(TAG, "testRealDelays: no configs")
-                _batchTesting.value = false
                 return@launch
             }
-            var checkUrl = settingsRepository.connectionCheckUrl.first().trim()
-            if (checkUrl.isNotEmpty() && !checkUrl.startsWith("http://") && !checkUrl.startsWith("https://")) {
-                checkUrl = "https://" + checkUrl
-            }
-            if (checkUrl.isEmpty()) checkUrl = SettingsRepository.DEFAULT_CONNECTION_CHECK_URL
+            val checkUrl = settingsRepository.connectionCheckUrl.first()
             val timeoutSec = settingsRepository.connectionCheckTimeoutSeconds.first()
             val timeoutMs = (timeoutSec * 1000).coerceIn(3000, 60000)
             val allowLan = settingsRepository.socksListenLan.first()
             val logLevel = settingsRepository.logLevel.first()
             Log.d(TAG, "testRealDelays: checkUrl=$checkUrl timeout=${timeoutMs}ms count=${snapshot.size}")
-            for (cfg in snapshot) {
-                if (!isActive) {
-                    Log.d(TAG, "testRealDelays: cancelled")
-                    break
-                }
-                _realDelayTestingIds.update { it + cfg.id }
-                val ms = testSingleRealDelay(cfg, allowLan, logLevel, checkUrl, timeoutMs, timeoutMs)
-                _realDelayResults.update { it + (cfg.id to ms) }
-                _realDelayTestingIds.update { it - cfg.id }
-                Log.d(TAG, "testRealDelays: ${cfg.serverAddr} -> ${ms}ms")
-                delay(350)
-            }
-            _batchTesting.value = false
-            Log.d(TAG, "testRealDelays: batch finished results=${_realDelayResults.value}")
+            realDelayTester.testAll(snapshot, checkUrl, timeoutMs, logLevel, allowLan)
+            Log.d(TAG, "testRealDelays: batch finished results=${realDelayResults.value}")
         }
     }
 
     fun cancelRealDelayTest() {
         batchJob?.cancel()
         batchJob = null
-        _batchTesting.value = false
-        _realDelayTestingIds.value = emptySet()
-        try { paqetRunner.stop() } catch (_: Exception) {}
+        realDelayTester.cancel()
         Log.d(TAG, "testRealDelays: cancelled by user")
     }
 
     fun clearRealDelayResults() {
-        _realDelayResults.value = emptyMap()
-        _realDelayTestingIds.value = emptySet()
-    }
-
-    private suspend fun testSingleRealDelay(
-        config: PaqetConfig,
-        allowLan: Boolean,
-        logLevel: String,
-        checkUrl: String,
-        connectTimeout: Int,
-        readTimeout: Int
-    ): Int {
-        return try {
-            val port = config.socksPort()
-            val socksListen = if (allowLan) "0.0.0.0:$port" else "127.0.0.1:$port"
-            val info = defaultNetworkInfoProvider.getDefaultNetworkInfo()
-            val configWithNetwork = if (info != null) {
-                config.copy(
-                    networkInterface = info.interfaceName,
-                    ipv4Addr = info.ipv4Addr,
-                    ipv6Addr = info.ipv6Addr,
-                    routerMac = info.routerMac,
-                    socksListen = socksListen
-                )
-            } else {
-                config.copy(socksListen = socksListen)
-            }
-            val yaml = configWithNetwork.toPaqetYaml(logLevel = logLevel)
-            val summary = "real-delay test: server=${configWithNetwork.serverAddr} socks=$socksListen"
-            val started = withContext(Dispatchers.IO) { paqetRunner.startWithYaml(yaml, summary) }
-            if (!started) {
-                Log.w(TAG, "testSingleRealDelay: paqet failed to start for ${config.serverAddr}")
-                return -1
-            }
-            val ready = withContext(Dispatchers.IO) {
-                val start = System.currentTimeMillis()
-                var ok = false
-                while (System.currentTimeMillis() - start < 4000) {
-                    try {
-                        Socket().use { s -> s.connect(InetSocketAddress("127.0.0.1", port), 500); ok = true; break }
-                    } catch (_: Exception) { }
-                    try { Thread.sleep(180) } catch (_: Exception) {}
-                }
-                ok
-            }
-            delay(250)
-            if (!ready) {
-                Log.w(TAG, "testSingleRealDelay: SOCKS not ready for ${config.serverAddr} port $port")
-                withContext(Dispatchers.IO) { paqetRunner.stop() }
-                delay(300)
-                return -1
-            }
-            val ms = withContext(Dispatchers.IO) {
-                runCatching {
-                    val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port))
-                    val url = URL(checkUrl)
-                    val conn = url.openConnection(proxy) as? HttpURLConnection ?: return@runCatching null
-                    try {
-                        conn.requestMethod = "GET"
-                        conn.connectTimeout = connectTimeout
-                        conn.readTimeout = readTimeout
-                        conn.instanceFollowRedirects = true
-                        val start = System.currentTimeMillis()
-                        conn.connect()
-                        val code = conn.responseCode
-                        Log.d(TAG, "testSingleRealDelay: ${config.serverAddr} response $code")
-                        (System.currentTimeMillis() - start).toInt()
-                    } finally {
-                        conn.disconnect()
-                    }
-                }.getOrElse { e ->
-                    Log.w(TAG, "testSingleRealDelay failed for ${config.serverAddr}", e)
-                    null
-                }
-            }
-            withContext(Dispatchers.IO) { paqetRunner.stop() }
-            delay(350)
-            ms ?: -1
-        } catch (e: Exception) {
-            Log.w(TAG, "testSingleRealDelay exception ${config.serverAddr}", e)
-            try { paqetRunner.stop() } catch (_: Exception) {}
-            -1
-        }
+        batchJob?.cancel()
+        batchJob = null
+        realDelayTester.clear()
     }
 }

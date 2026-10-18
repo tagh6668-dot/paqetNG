@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.3.5]
+
+### Feat
+- Test real delays v2: parallel x10 isolated tester (no VPN disconnect needed). Each config runs in its own temp dir with its own paqet binary copy + ephemeral SOCKS port (28k range) + separate anti-RST iptables, so the active VPN/SOCKS session is never touched. Concurrency is 10 (Semaphore). Timeout and check URL now both follow Settings > Connection check (seconds 3-60, coerced to ms), likewise SOCKS LAN setting and log level. Results update live per-config (pill + spinner) via StateFlow; list auto-sorts low->high after batch (timeouts last).
+- Toolbar cleanup: removed duplicate toolbar Speed button — only the 3-dot overflow menu entry remains ("Test real delays" / "Cancel real delay test" during run). Previous duplicate ran the same action twice.
+
 ## [v1.3.4]
 
 ### Feat

@@ -56,7 +56,8 @@ class MainActivity : ComponentActivity() {
                     configRepository,
                     paqetRunner,
                     defaultNetworkInfoProvider,
-                    settingsRepository
+                    settingsRepository,
+                    applicationContext
                 ) as T
             }
         }

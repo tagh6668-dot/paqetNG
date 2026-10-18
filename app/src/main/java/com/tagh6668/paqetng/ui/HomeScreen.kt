@@ -39,7 +39,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -218,7 +217,6 @@ fun HomeScreen(
                         var menuExpanded by remember { mutableStateOf(false) }
                         val realResults by viewModel.realDelayResults.collectAsState()
                         val batchTesting by viewModel.batchTesting.collectAsState()
-                        val isRunningTop by viewModel.isRunning.collectAsState(initial = false)
                         val hasRealResults = realResults.isNotEmpty()
                         Box {
                             IconButton(onClick = { menuExpanded = true }) {
@@ -239,15 +237,24 @@ fun HomeScreen(
                                         }
                                     )
                                 }
-                                androidx.compose.material3.DropdownMenuItem(
-                                    text = { Text(if (batchTesting) "Testing real delays..." else "Test real delays") },
-                                    enabled = configs.isNotEmpty() && !isRunningTop && !batchTesting,
-                                    onClick = {
-                                        menuExpanded = false
-                                        viewModel.testRealDelays()
-                                        scope.launch { snackbarHostState.showSnackbar("Testing ${configs.size} configs...") }
-                                    }
-                                )
+                                if (batchTesting) {
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("Cancel real delay test") },
+                                        onClick = {
+                                            menuExpanded = false
+                                            viewModel.cancelRealDelayTest()
+                                        }
+                                    )
+                                } else {
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("Test real delays") },
+                                        onClick = {
+                                            menuExpanded = false
+                                            viewModel.testRealDelays()
+                                            scope.launch { snackbarHostState.showSnackbar("Testing ${configs.size} configs (x10 parallel)...") }
+                                        }
+                                    )
+                                }
                                 if (hasRealResults) {
                                     androidx.compose.material3.DropdownMenuItem(
                                         text = { Text("Clear real delay results") },
@@ -258,23 +265,6 @@ fun HomeScreen(
                                         }
                                     )
                                 }
-                            }
-                        }
-                    }
-                    run {
-                        val batchTs by viewModel.batchTesting.collectAsState()
-                        val isRt by viewModel.isRunning.collectAsState(initial = false)
-                        val cfgEmpty = configs.isEmpty()
-                        IconButton(
-                            onClick = {
-                                if (batchTs) viewModel.cancelRealDelayTest() else viewModel.testRealDelays()
-                            },
-                            enabled = !cfgEmpty && !isRt
-                        ) {
-                            if (batchTs) {
-                                CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-                            } else {
-                                Icon(Icons.Default.Speed, contentDescription = "Test real delays")
                             }
                         }
                     }
