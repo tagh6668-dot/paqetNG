@@ -10,6 +10,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -69,6 +70,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -471,17 +473,28 @@ private fun ConfigItem(
                         realDelayMs != null -> {
                             Spacer(Modifier.width(8.dp))
                             val msVal = realDelayMs!!
-                            val pillColor = when {
-                                msVal == -1 -> MaterialTheme.colorScheme.error
-                                msVal < 300 -> MaterialTheme.colorScheme.primary
-                                msVal < 800 -> MaterialTheme.colorScheme.secondary
-                                else -> MaterialTheme.colorScheme.error
+                            // High-contrast ping pill: traffic-light colors (not primary blue) so it
+                            // stays legible on the selected card (primaryContainer = blue).
+                            val isDark = isSystemInDarkTheme()
+                            val (pillColor, pillBg) = when {
+                                msVal == -1 -> Pair(MaterialTheme.colorScheme.error, MaterialTheme.colorScheme.error.copy(alpha = if (isSelected) 0.22f else 0.14f))
+                                msVal < 300 -> {
+                                    val c = if (isDark) Color(0xFFA5D6A7) else Color(0xFF1B7A2E)
+                                    val bg = if (isSelected) Color.White.copy(alpha = if (isDark) 0.14f else 0.92f) else c.copy(alpha = if (isDark) 0.18f else 0.14f)
+                                    Pair(c, bg)
+                                }
+                                msVal < 800 -> {
+                                    val c = if (isDark) Color(0xFFFFE082) else Color(0xFF6D5900)
+                                    val bg = if (isSelected) Color.White.copy(alpha = if (isDark) 0.14f else 0.92f) else c.copy(alpha = if (isDark) 0.18f else 0.14f)
+                                    Pair(c, bg)
+                                }
+                                else -> Pair(MaterialTheme.colorScheme.error, MaterialTheme.colorScheme.error.copy(alpha = if (isSelected) 0.22f else 0.14f))
                             }
                             val label = if (msVal == -1) "timeout" else "${msVal}ms"
                             Box(
                                 modifier = Modifier
                                     .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-                                    .background(pillColor.copy(alpha = 0.14f))
+                                    .background(pillBg)
                                     .padding(horizontal = 7.dp, vertical = 2.dp)
                             ) {
                                 Text(label, style = MaterialTheme.typography.labelSmall, color = pillColor)

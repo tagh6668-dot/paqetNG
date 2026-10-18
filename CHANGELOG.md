@@ -1,3 +1,10 @@
+# Changelog
+
+## [v1.3.10]
+
+### Fix
+- **Ping pill contrast on selected card**: نشان پینگ (ms/timeout) قبلا از `primary` (آبی) استفاده می‌کرد و روی کارت انتخاب‌شده (`primaryContainer` آبی) کنتراست نداشت و دیده نمی‌شد. حالا پیل پینگ از رنگ‌های ترافیک‌لایت با کنتراست بالا استفاده می‌کند: سبز (<300ms) و زرد (300–800ms) و قرمز برای timeout/بالا — در دارک‌مود همیشه سبز روشن `A5D6A7` / زرد روشن `FFE082` با پس‌زمینه 0.18-alpha (برای کارت‌های عادی و انتخاب‌شده) و در لایت‌مود سبز/زرد تیره با پس‌زمینه سفید مات روی کارت انتخاب‌شده، تا روی هر دو تم و هر دو حالت کارتی خوانا باشد.
+
 ## [v1.3.9]
 
 ### Fix
@@ -11,9 +18,6 @@
 ### Fix
 - **Dual-stack TUN** (`PaqetNGVpnService` + `Tun2SocksRunner`): VPN previously created an IPv4-only TUN (`10.0.0.2/30` + `0.0.0.0/0` + Google v4 DNS). IPv6/AAAA traffic bypassed the TUN entirely, going direct and appearing "faster" than tunneled IPv4. Now adds `fd00::2/64` + `::/0` + Google v6 DNS (`2001:4860:4860::8888/8844`) to the Builder and `ipv6: 'fd00::2'` to the hev-socks5-tunnel config, so both families are routed through tun2socks -> SOCKS -> paqet.
 - **Hash collision for IPv4-mapped IPv6** (`paqet/internal/pkg/hash/ip_addr.go`): `IPAddr` checked `len(ip)==4` instead of `To4()!=nil`, so 16-byte `::ffff:x.x.x.x` addresses were hashed via the IPv6 XOR path and could collide with distinct v4 hosts. Now uses `To4()` normalization, matching Go's own IP canonicalization. Core bumped to `v1.0.0-alpha.22`.
-
-
-# Changelog
 
 ## [v1.3.7]
 
@@ -36,7 +40,6 @@
 
 ## [v1.3.5]
 
-
 ### Feat
 - Test real delays v2: parallel x10 isolated tester (no VPN disconnect needed). Each config runs in its own temp dir with its own paqet binary copy + ephemeral SOCKS port (28k range) + separate anti-RST iptables, so the active VPN/SOCKS session is never touched. Concurrency is 10 (Semaphore). Timeout and check URL now both follow Settings > Connection check (seconds 3-60, coerced to ms), likewise SOCKS LAN setting and log level. Results update live per-config (pill + spinner) via StateFlow; list auto-sorts low->high after batch (timeouts last).
 - Toolbar cleanup: removed duplicate toolbar Speed button — only the 3-dot overflow menu entry remains ("Test real delays" / "Cancel real delay test" during run). Previous duplicate ran the same action twice.
@@ -45,7 +48,6 @@
 
 ### Feat
 - Test real delays: new "Test real delays" action on Home tests every saved config for real via paqet SOCKS (starts paqet per config, polls SOCKS until ready, GETs the connection check URL through that SOCKS, records ms). Shows per-config pill (green <300ms, secondary 300-800ms, red timeout), inline spinner while testing one, batch progress row with cancel/clear. Results sort low->high (timeouts last, untested middle). Requires root and disconnected state; uses your SOCKS port, LAN setting and connection-check URL/timeout. Batch start is available from toolbar Speed button and overflow menu.
-
 
 All notable changes to this project will be documented in this file.
 
