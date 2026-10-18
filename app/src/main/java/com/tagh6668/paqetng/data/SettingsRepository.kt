@@ -162,7 +162,7 @@ class SettingsRepository(private val context: Context) {
         const val DEFAULT_SHOW_LATENCY_IN_UI = true
         const val DEFAULT_AUTO_RECONNECT = false
         const val DEFAULT_SOCKS_LISTEN_LAN = false
-        const val DEFAULT_LOG_LEVEL = "fatal"
+        const val DEFAULT_LOG_LEVEL = "warn"
         const val DEFAULT_CONNECTION_MODE = "vpn"
 
         val LOG_LEVELS = listOf("none", "debug", "info", "warn", "error", "fatal")

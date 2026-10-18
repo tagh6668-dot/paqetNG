@@ -55,16 +55,30 @@ class PaqetRunner(
      * RSTs them, killing connections. Requires root. Best-effort: logs on failure.
      */
     private fun installAntiRstRuleBlocking(port: Int) {
-        runSuBlocking(
+        val r4 = runSuBlocking(
             "iptables -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || " +
                 "iptables -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP",
             tag = "anti-rst install (port=$port)"
         )
-        runSuBlocking(
+        if (r4 == null) {
+            android.util.Log.e("PaqetRunner", "anti-rst install FAILED v4 port=$port — RST storm will kill raw-TCP! Check root / iptables.")
+            logBuffer?.append(AppLogBuffer.TAG_SESSION, "anti-rst install FAILED v4 port=$port — no protection! Check root/iptables")
+        }
+        val r6 = runSuBlocking(
             "ip6tables -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || " +
                 "ip6tables -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP",
             tag = "anti-rst install v6 (port=$port)"
         )
+        if (r6 == null) {
+            android.util.Log.w("PaqetRunner", "anti-rst install FAILED v6 port=$port (ip6tables missing?)")
+            logBuffer?.append(AppLogBuffer.TAG_SESSION, "anti-rst install FAILED v6 port=$port (ip6tables missing?)")
+        }
+        // Verify: log current state of rules after install attempt
+        val verifyCmd = "iptables -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>&1; echo v4:$?; ip6tables -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>&1; echo v6:$?"
+        val verify = runSuBlocking(verifyCmd, tag = "anti-rst verify (port=$port)")
+        if (verify != null) {
+            logBuffer?.append(AppLogBuffer.TAG_SESSION, "anti-rst verify port=$port: $verify")
+        }
     }
 
     /** Removes the anti-RST iptables rule installed by [installAntiRstRuleBlocking]. */
@@ -102,19 +116,53 @@ class PaqetRunner(
                 .redirectErrorStream(true)
                 .start()
             val out = p.inputStream.bufferedReader().readText()
-            val exit = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                p.waitFor(5, TimeUnit.SECONDS)
+            val timedOut: Boolean
+            val success: Boolean
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                success = p.waitFor(5, TimeUnit.SECONDS)
+                timedOut = !success
             } else {
                 val t = Thread { p.waitFor() }
                 t.start()
                 t.join(5000)
-                !t.isAlive
+                val alive = t.isAlive
+                timedOut = alive
+                success = !alive && p.exitValue() == 0
+                // For old branch we must check exit code via trick above; if wait succeeded we need to verify code
+                // Wait already returned, check exit code via available method
+                if (!alive) {
+                    try {
+                        val code = p.exitValue()
+                        if (code != 0) {
+                            android.util.Log.w("PaqetRunner", "$tag failed exit=$code out=${out.take(400)}")
+                            logBuffer?.append(AppLogBuffer.TAG_SESSION, "$tag: FAILED exit=$code out=${out.take(400)}")
+                        } else {
+                            logBuffer?.append(AppLogBuffer.TAG_SESSION, "$tag: exit=true ${out.take(200)}")
+                        }
+                        p.destroy()
+                        return if (code == 0) out else null
+                    } catch (_: Exception) {}
+                }
+            }
+            if (timedOut) {
+                android.util.Log.w("PaqetRunner", "$tag timeout after 5s cmd=$cmd")
+                logBuffer?.append(AppLogBuffer.TAG_SESSION, "$tag: TIMEOUT 5s cmd=$cmd out=${out.take(200)}")
+                try { p.destroyForcibly() } catch (_: Exception) { p.destroy() }
+                return null
+            }
+            val code = try { p.exitValue() } catch (_: Exception) { -1 }
+            if (code != 0) {
+                android.util.Log.w("PaqetRunner", "$tag failed exit=$code out=${out.take(400)}")
+                logBuffer?.append(AppLogBuffer.TAG_SESSION, "$tag: FAILED exit=$code out=${out.take(400)}")
+                p.destroy()
+                return null
             }
             p.destroy()
-            logBuffer?.append(AppLogBuffer.TAG_SESSION, "$tag: exit=$exit ${out.take(200)}")
-            if (exit) out else null
+            logBuffer?.append(AppLogBuffer.TAG_SESSION, "$tag: exit=true ${out.take(200)}")
+            out
         } catch (e: Exception) {
-            logBuffer?.append(AppLogBuffer.TAG_SESSION, "$tag failed: ${e.message}")
+            android.util.Log.w("PaqetRunner", "$tag exception", e)
+            logBuffer?.append(AppLogBuffer.TAG_SESSION, "$tag failed: ${e.message} ${e.stackTraceToString().take(400)}")
             null
         }
     }
@@ -272,6 +320,11 @@ class PaqetRunner(
                 thread.join(1000)
             }
             p.destroy()
+            try {
+                val sweep = ProcessBuilder("su", "-c", "pkill -9 -f 'paqet.*run -c' || true").redirectErrorStream(true).start()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) sweep.waitFor(1, TimeUnit.SECONDS) else { val tt = Thread { sweep.waitFor() }; tt.start(); tt.join(1000) }
+                sweep.destroy()
+            } catch (_: Exception) {}
             Thread.sleep(150)
         } catch (e: Exception) {
             // ignore
@@ -298,7 +351,13 @@ class PaqetRunner(
         // Parse server port for the anti-RST iptables rule (Bug #1: was parsing network ipv4 :0)
         lastRawPort = parseServerPortFromYaml(configYaml)
         val fwPort = lastRawPort
-        if (fwPort != null) fwExecutor.execute { installAntiRstRuleBlocking(fwPort) }
+        if (fwPort != null) {
+            // Execute synchronously once before queuing to catch immediate su/iptables failure early
+            fwExecutor.execute { installAntiRstRuleBlocking(fwPort) }
+        } else {
+            android.util.Log.e("PaqetRunner", "parseServerPortFromYaml returned null — anti-RST NOT installed! yaml preview=${configYaml.take(800)}")
+            logBuffer?.append(AppLogBuffer.TAG_SESSION, "anti-rst SKIP: could not parse server port from YAML — RST protection disabled! preview=${configYaml.take(400)}")
+        }
         val configFile = File(paqetDir, "config_run.yaml")
         return try {
             configFile.writeText(configYaml)
