@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.3.1]
+
+### Feat
+- Notification disconnect: in VPN mode the foreground notification's Disconnect button now stops `paqet` directly (previously only tore down TUN); in SOCKS-only mode a new ongoing notification is shown so the user can disconnect without opening the app. Quick Settings tile also handles both modes and notification shade.
+
 ## [v1.2.9]
 
 ### Fix

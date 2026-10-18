@@ -1,6 +1,8 @@
 <resources>
     <string name="app_name">paqetNG</string>
     <string name="notification_action_disconnect">Disconnect</string>
+    <string name="notification_socks_connected">SOCKS proxy running — tap Disconnect to stop</string>
+    <string name="notification_vpn_connected">VPN connected — tap Disconnect to stop</string>
 
     <!-- Quick Settings tile -->
     <string name="app_tile_name">paqetNG</string>

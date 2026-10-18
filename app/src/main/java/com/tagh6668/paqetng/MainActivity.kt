@@ -181,9 +181,16 @@ class MainActivity : ComponentActivity() {
         if (config == null) return
         logBuffer.clear()
         if (connectionMode == "socks") {
-            // SOCKS-only mode: start paqet only, no VPN
-            logBuffer.append(AppLogBuffer.TAG_VPN, "Starting paqet (SOCKS-only mode); VPN will not start.")
-            viewModel.connect(config, null)
+            logBuffer.append(AppLogBuffer.TAG_VPN, "Starting paqet (SOCKS-only mode); showing disconnect notification.")
+            viewModel.connect(config) {
+                // Show ongoing notification so user can disconnect from shade
+                val svc = Intent(this, com.tagh6668.paqetng.service.SocksNotificationService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(svc)
+                } else {
+                    startService(svc)
+                }
+            }
             return
         }
         val prepare = VpnService.prepare(this)
@@ -229,11 +236,16 @@ class MainActivity : ComponentActivity() {
 
     private fun handleDisconnect() {
         cancelPendingVpnStart()
-        // Stop Paqet first (and kill any paqet by name), then tell VPN service to tear down
         viewModel.disconnect()
+        // Tear down whichever foreground service is active (VPN or SOCKS)
         startService(
             Intent(this, PaqetNGVpnService::class.java).setAction(PaqetNGVpnService.ACTION_STOP)
         )
         stopService(Intent(this, PaqetNGVpnService::class.java))
+        startService(
+            Intent(this, com.tagh6668.paqetng.service.SocksNotificationService::class.java)
+                .setAction(com.tagh6668.paqetng.service.SocksNotificationService.ACTION_STOP)
+        )
+        stopService(Intent(this, com.tagh6668.paqetng.service.SocksNotificationService::class.java))
     }
 }

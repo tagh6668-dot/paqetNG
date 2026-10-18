@@ -41,13 +41,17 @@ class PaqetNGTileService : TileService() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 when (intent?.action) {
                     PaqetNGVpnService.ACTION_VPN_STARTED,
-                    PaqetNGVpnService.ACTION_VPN_STOPPED -> updateTileState()
+                    PaqetNGVpnService.ACTION_VPN_STOPPED,
+                    SocksNotificationService.ACTION_SOCKS_STARTED,
+                    SocksNotificationService.ACTION_SOCKS_STOPPED -> updateTileState()
                 }
             }
         }
         val filter = IntentFilter().apply {
             addAction(PaqetNGVpnService.ACTION_VPN_STARTED)
             addAction(PaqetNGVpnService.ACTION_VPN_STOPPED)
+            addAction(SocksNotificationService.ACTION_SOCKS_STARTED)
+            addAction(SocksNotificationService.ACTION_SOCKS_STOPPED)
         }
         ContextCompat.registerReceiver(
             applicationContext,
@@ -132,6 +136,14 @@ class PaqetNGTileService : TileService() {
             val summary = "server=${configWithNetwork.serverAddr} socks=${configWithNetwork.socksListen}"
             if (connectionMode == "socks") {
                 val started = app.paqetRunner.startWithYaml(configWithNetwork.toPaqetYaml(logLevel = logLevel), summary)
+                if (started) {
+                    val svc = Intent(applicationContext, SocksNotificationService::class.java)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        applicationContext.startForegroundService(svc)
+                    } else {
+                        applicationContext.startService(svc)
+                    }
+                }
                 mainHandler.post {
                     if (started) setState(Tile.STATE_ACTIVE, getString(R.string.app_tile_label_connected))
                     else Toast.makeText(applicationContext, R.string.app_tile_start_failed, Toast.LENGTH_SHORT).show()
@@ -171,6 +183,10 @@ class PaqetNGTileService : TileService() {
             Intent(applicationContext, PaqetNGVpnService::class.java).setAction(PaqetNGVpnService.ACTION_STOP)
         )
         applicationContext.stopService(Intent(applicationContext, PaqetNGVpnService::class.java))
+        applicationContext.startService(
+            Intent(applicationContext, SocksNotificationService::class.java).setAction(SocksNotificationService.ACTION_STOP)
+        )
+        applicationContext.stopService(Intent(applicationContext, SocksNotificationService::class.java))
         setState(Tile.STATE_INACTIVE)
     }
 

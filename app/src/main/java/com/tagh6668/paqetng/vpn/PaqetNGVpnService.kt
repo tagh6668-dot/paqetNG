@@ -17,6 +17,7 @@ import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import com.tagh6668.paqetng.MainActivity
+import com.tagh6668.paqetng.PaqetNGApplication
 import com.tagh6668.paqetng.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -70,7 +71,12 @@ class PaqetNGVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            Log.i(TAG, "Received ACTION_STOP - tearing down VPN")
+            Log.i(TAG, "Received ACTION_STOP - stopping paqet and tearing down VPN")
+            try {
+                (application as? PaqetNGApplication)?.paqetRunner?.stop()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to stop paqetRunner from VPN service", e)
+            }
             tearDown()
             stopSelf()
             return START_NOT_STICKY
@@ -260,7 +266,7 @@ class PaqetNGVpnService : VpnService() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(if (connecting) "Connecting…" else "VPN connected")
+            .setContentText(if (connecting) "Connecting…" else getString(R.string.notification_vpn_connected))
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentIntent(contentPending)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, getString(R.string.notification_action_disconnect), stopPending)

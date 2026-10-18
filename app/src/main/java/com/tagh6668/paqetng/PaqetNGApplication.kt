@@ -11,6 +11,7 @@ import com.tagh6668.paqetng.data.SettingsRepository
 import com.tagh6668.paqetng.data.TcpdumpBuffer
 import com.tagh6668.paqetng.paqet.PaqetRunner
 import com.tagh6668.paqetng.paqet.TcpdumpRunner
+import com.tagh6668.paqetng.service.SocksNotificationService
 import com.tagh6668.paqetng.vpn.PaqetNGVpnService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,15 +37,19 @@ class PaqetNGApplication : Application() {
 
     private val vpnStoppedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == PaqetNGVpnService.ACTION_VPN_STOPPED) {
-                paqetRunner.stop()
+            when (intent?.action) {
+                PaqetNGVpnService.ACTION_VPN_STOPPED,
+                SocksNotificationService.ACTION_SOCKS_STOPPED -> paqetRunner.stop()
             }
         }
     }
 
     override fun onCreate() {
         super.onCreate()
-        val filter = IntentFilter(PaqetNGVpnService.ACTION_VPN_STOPPED)
+        val filter = IntentFilter().apply {
+            addAction(PaqetNGVpnService.ACTION_VPN_STOPPED)
+            addAction(SocksNotificationService.ACTION_SOCKS_STOPPED)
+        }
         ContextCompat.registerReceiver(
             this,
             vpnStoppedReceiver,
