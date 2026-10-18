@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.3.4]
+
+### Feat
+- Test real delays: new "Test real delays" action on Home tests every saved config for real via paqet SOCKS (starts paqet per config, polls SOCKS until ready, GETs the connection check URL through that SOCKS, records ms). Shows per-config pill (green <300ms, secondary 300-800ms, red timeout), inline spinner while testing one, batch progress row with cancel/clear. Results sort low->high (timeouts last, untested middle). Requires root and disconnected state; uses your SOCKS port, LAN setting and connection-check URL/timeout. Batch start is available from toolbar Speed button and overflow menu.
+
+
 All notable changes to this project will be documented in this file.
 
 ## [v1.3.3]

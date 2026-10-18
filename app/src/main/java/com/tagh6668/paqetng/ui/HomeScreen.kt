@@ -39,6 +39,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -212,13 +214,68 @@ fun HomeScreen(
                     IconButton(onClick = onLogsClick) {
                         Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Logs")
                     }
-                    if (configs.isNotEmpty()) {
-                        IconButton(onClick = {
-                            val allText = viewModel.exportAllToClipboardText(configs)
-                            copyAllConfigsToClipboard(context, allText)
-                            scope.launch { snackbarHostState.showSnackbar("Exported ${configs.size} configs to clipboard") }
-                        }) {
-                            Icon(Icons.Default.Share, contentDescription = "Export all configs")
+                    run {
+                        var menuExpanded by remember { mutableStateOf(false) }
+                        val realResults by viewModel.realDelayResults.collectAsState()
+                        val batchTesting by viewModel.batchTesting.collectAsState()
+                        val isRunningTop by viewModel.isRunning.collectAsState(initial = false)
+                        val hasRealResults = realResults.isNotEmpty()
+                        Box {
+                            IconButton(onClick = { menuExpanded = true }) {
+                                Icon(Icons.Default.Share, contentDescription = "More")
+                            }
+                            androidx.compose.material3.DropdownMenu(
+                                expanded = menuExpanded,
+                                onDismissRequest = { menuExpanded = false }
+                            ) {
+                                if (configs.isNotEmpty()) {
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("Export all configs") },
+                                        onClick = {
+                                            menuExpanded = false
+                                            val allText = viewModel.exportAllToClipboardText(configs)
+                                            copyAllConfigsToClipboard(context, allText)
+                                            scope.launch { snackbarHostState.showSnackbar("Exported ${configs.size} configs to clipboard") }
+                                        }
+                                    )
+                                }
+                                androidx.compose.material3.DropdownMenuItem(
+                                    text = { Text(if (batchTesting) "Testing real delays..." else "Test real delays") },
+                                    enabled = configs.isNotEmpty() && !isRunningTop && !batchTesting,
+                                    onClick = {
+                                        menuExpanded = false
+                                        viewModel.testRealDelays()
+                                        scope.launch { snackbarHostState.showSnackbar("Testing ${configs.size} configs...") }
+                                    }
+                                )
+                                if (hasRealResults) {
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("Clear real delay results") },
+                                        onClick = {
+                                            menuExpanded = false
+                                            viewModel.clearRealDelayResults()
+                                            scope.launch { snackbarHostState.showSnackbar("Cleared") }
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    run {
+                        val batchTs by viewModel.batchTesting.collectAsState()
+                        val isRt by viewModel.isRunning.collectAsState(initial = false)
+                        val cfgEmpty = configs.isEmpty()
+                        IconButton(
+                            onClick = {
+                                if (batchTs) viewModel.cancelRealDelayTest() else viewModel.testRealDelays()
+                            },
+                            enabled = !cfgEmpty && !isRt
+                        ) {
+                            if (batchTs) {
+                                CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Default.Speed, contentDescription = "Test real delays")
+                            }
                         }
                     }
                     IconButton(onClick = { viewModel.openAddConfigDialog() }) {
@@ -257,6 +314,24 @@ fun HomeScreen(
             }
         }
     ) { paddingValues ->
+        val realDelayResults by viewModel.realDelayResults.collectAsState()
+        val realDelayTestingIds by viewModel.realDelayTestingIds.collectAsState()
+        val batchTestingLazy by viewModel.batchTesting.collectAsState()
+        // Sorted list when batch results exist: successful low->high, failing at bottom
+        val sortedConfigs = remember(configs, realDelayResults, batchTestingLazy) {
+            if (realDelayResults.isEmpty()) configs else {
+                val withRes = configs.sortedWith(compareBy<PaqetConfig> { cfg ->
+                    val v = realDelayResults[cfg.id]
+                    when {
+                        v == null -> 2
+                        v == -1 -> 3
+                        else -> 0
+                    }
+                }.thenBy { realDelayResults[it.id] ?: Int.MAX_VALUE })
+                // Only sort after batch finished; while testing keep original order
+                if (batchTestingLazy) configs else withRes
+            }
+        }
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -265,10 +340,25 @@ fun HomeScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(vertical = 16.dp)
         ) {
-            items(configs) { config ->
+            // Status chip row when batch testing or has results
+            if (batchTestingLazy || realDelayResults.isNotEmpty()) {
+                item {
+                    RealDelayStatusRow(
+                        batchTesting = batchTestingLazy,
+                        configs = configs,
+                        results = realDelayResults,
+                        testingIds = realDelayTestingIds,
+                        onCancel = viewModel::cancelRealDelayTest,
+                        onClear = viewModel::clearRealDelayResults
+                    )
+                }
+            }
+            items(sortedConfigs, key = { it.id }) { config ->
                 ConfigItem(
                     config = config,
                     isSelected = config.id == selectedConfigId,
+                    realDelayMs = realDelayResults[config.id],
+                    isRealDelayTesting = realDelayTestingIds.contains(config.id),
                     onSelect = { viewModel.selectConfig(config.id) },
                     onEdit = { viewModel.openEdit(config) },
                     onDelete = { viewModel.requestDeleteConfig(config.id) },
@@ -280,9 +370,67 @@ fun HomeScreen(
 }
 
 @Composable
+private fun RealDelayStatusRow(
+    batchTesting: Boolean,
+    configs: List<PaqetConfig>,
+    results: Map<String, Int>,
+    testingIds: Set<String>,
+    onCancel: () -> Unit,
+    onClear: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (batchTesting) "Testing real delays..." else "Real delay results",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                val done = results.size
+                val total = configs.size
+                val testingCount = testingIds.size
+                Text(
+                    text = when {
+                        batchTesting -> "Progress $done / $total${if (testingCount>0) "  •  testing $testingCount" else ""}"
+                        else -> "$done / $total configs tested  •  sorted by delay"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (batchTesting) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                IconButton(onClick = onCancel) { Icon(Icons.Default.Cancel, contentDescription = "Cancel") }
+            } else {
+                IconButton(onClick = onClear) { Icon(Icons.Default.Delete, contentDescription = "Clear") }
+            }
+        }
+    }
+}
+
+private fun realDelayLabel(ms: Int?): String = when {
+    ms == null -> ""
+    ms == -1 -> "timeout"
+    else -> "${ms}ms"
+}
+
+private fun realDelayColor(ms: Int?, isTesting: Boolean): androidx.compose.ui.graphics.Color? = null
+
+@Composable
 private fun ConfigItem(
     config: PaqetConfig,
     isSelected: Boolean,
+    realDelayMs: Int? = null,
+    isRealDelayTesting: Boolean = false,
     onSelect: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
@@ -316,11 +464,41 @@ private fun ConfigItem(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = config.name.ifEmpty { config.serverAddr },
-                    style = MaterialTheme.typography.titleMedium,
-                    color = contentColor
-                )
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = config.name.ifEmpty { config.serverAddr },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = contentColor,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    when {
+                        isRealDelayTesting -> {
+                            Spacer(Modifier.width(8.dp))
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(4.dp))
+                            Text("testing", style = MaterialTheme.typography.labelSmall, color = supportingColor)
+                        }
+                        realDelayMs != null -> {
+                            Spacer(Modifier.width(8.dp))
+                            val msVal = realDelayMs!!
+                            val pillColor = when {
+                                msVal == -1 -> MaterialTheme.colorScheme.error
+                                msVal < 300 -> MaterialTheme.colorScheme.primary
+                                msVal < 800 -> MaterialTheme.colorScheme.secondary
+                                else -> MaterialTheme.colorScheme.error
+                            }
+                            val label = if (msVal == -1) "timeout" else "${msVal}ms"
+                            Box(
+                                modifier = Modifier
+                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                                    .background(pillColor.copy(alpha = 0.14f))
+                                    .padding(horizontal = 7.dp, vertical = 2.dp)
+                            ) {
+                                Text(label, style = MaterialTheme.typography.labelSmall, color = pillColor)
+                            }
+                        }
+                    }
+                }
                 Text(
                     text = config.serverAddr,
                     style = MaterialTheme.typography.bodyMedium,
