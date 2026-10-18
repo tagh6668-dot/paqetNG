@@ -31,6 +31,7 @@ import com.tagh6668.paqetng.ui.PacketDetailActivity
 import com.tagh6668.paqetng.ui.PacketDumpScreen
 import com.tagh6668.paqetng.ui.SettingsScreen
 import com.tagh6668.paqetng.ui.theme.PaqetNGTheme
+import kotlinx.coroutines.flow.first
 import com.tagh6668.paqetng.vpn.PaqetNGVpnService
 
 class MainActivity : ComponentActivity() {
@@ -83,11 +84,14 @@ class MainActivity : ComponentActivity() {
             var showSettings by remember { mutableStateOf(false) }
             var showLogViewer by remember { mutableStateOf(false) }
             var showPacketDump by remember { mutableStateOf(false) }
+            var showSplitApps by remember { mutableStateOf(false) }
             
             // Helper functions to update screen state
             val dismissPacketDump = { showPacketDump = false }
             val dismissLogViewer = { showLogViewer = false }
             val dismissSettings = { showSettings = false }
+            val dismissSplitApps = { showSplitApps = false }
+            val showSplitAppsScreen = { showSplitApps = true }
             val showPacketDumpScreen = { showPacketDump = true }
             val showLogViewerScreen = { showLogViewer = true }
             val showSettingsScreen = { showSettings = true }
@@ -140,11 +144,21 @@ class MainActivity : ComponentActivity() {
                             onPacketDumpClick = showPacketDumpScreen
                         )
                     }
+                    showSplitApps -> {
+                        BackHandler(onBack = dismissSplitApps)
+                        SplitAppsScreen(
+                            settingsRepository = settingsRepository,
+                            onBack = dismissSplitApps
+                        )
+                    }
                     showSettings -> {
                         BackHandler(onBack = dismissSettings)
                         SettingsScreen(
                             settingsRepository = settingsRepository,
-                            onBack = dismissSettings
+                            onBack = dismissSettings,
+                            onSplitAppsClick = {
+                                showSplitAppsScreen()
+                            }
                         )
                     }
                     else -> {
@@ -185,10 +199,14 @@ class MainActivity : ComponentActivity() {
         viewModel.connect(config) {
             logBuffer.append(AppLogBuffer.TAG_VPN, "Paqet started; waiting for SOCKS to bind then starting VPN…")
             // Give paqet time to bind to 127.0.0.1:socksPort before tun2socks tries to connect (same idea as v2rayNG).
+            val splitMode = runBlocking { kotlinx.coroutines.flow.first(settingsRepository.splitMode) }
+            val splitApps = runBlocking { kotlinx.coroutines.flow.first(settingsRepository.splitApps) }
             val runnable = Runnable {
-                logBuffer.append(AppLogBuffer.TAG_VPN, "VPN starting port=${config.socksPort()} config=${config.name.ifEmpty { config.serverAddr }}")
+                logBuffer.append(AppLogBuffer.TAG_VPN, "VPN starting port=${config.socksPort()} config=${config.name.ifEmpty { config.serverAddr }} mode=$splitMode apps=${splitApps.size}")
                 val intent = Intent(this, PaqetNGVpnService::class.java)
                     .putExtra(PaqetNGVpnService.EXTRA_SOCKS_PORT, config.socksPort())
+                    .putExtra(PaqetNGVpnService.EXTRA_SPLIT_MODE, splitMode)
+                    .putStringArrayListExtra(PaqetNGVpnService.EXTRA_SPLIT_APPS, ArrayList(splitApps))
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     startForegroundService(intent)
                 } else {

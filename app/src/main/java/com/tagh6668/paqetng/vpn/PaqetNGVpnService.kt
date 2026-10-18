@@ -76,6 +76,9 @@ class PaqetNGVpnService : VpnService() {
             return START_NOT_STICKY
         }
         val socksPort = intent?.getIntExtra(EXTRA_SOCKS_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
+        val splitMode = intent?.getStringExtra(EXTRA_SPLIT_MODE) ?: "disabled"
+        val splitAppsExtra = intent?.getStringArrayListExtra(EXTRA_SPLIT_APPS)
+        val splitApps: Set<String> = splitAppsExtra?.toSet() ?: emptySet()
         val prepare = prepare(this)
         if (prepare != null) {
             Log.e(TAG, "VPN preparation failed - user must grant VPN permission")
@@ -99,7 +102,7 @@ class PaqetNGVpnService : VpnService() {
                     vpnInterface?.close()
                     vpnInterface = null
                 }
-                establishVpn()
+                establishVpn(splitMode, splitApps)
             }
             if (!success) {
                 Log.e(TAG, "Failed to establish VPN - stopping service")
@@ -155,7 +158,7 @@ class PaqetNGVpnService : VpnService() {
         vpnInterface = null
     }
 
-    private fun establishVpn(): Boolean {
+    private fun establishVpn(splitMode: String = "disabled", splitApps: Set<String> = emptySet()): Boolean {
         return try {
             val builder = Builder()
                 .setSession(getString(R.string.app_name))
@@ -165,11 +168,35 @@ class PaqetNGVpnService : VpnService() {
                 .addDnsServer("8.8.8.8")
                 .addDnsServer("8.8.4.4")
                 .setBlocking(false)
-            // Disallow our app so tun2socks' connection to 127.0.0.1:SOCKS does not go through VPN (avoids loop).
-            try {
-                builder.addDisallowedApplication(packageName)
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not disallow self: ${e.message}")
+            // Split tunneling
+            val effectiveMode = when (splitMode) {
+                "bypass", "only" -> if (splitApps.isEmpty()) "disabled" else splitMode
+                else -> "disabled"
+            }
+            when (effectiveMode) {
+                "bypass" -> {
+                    // All via VPN except selected apps
+                    val toBypass = splitApps.toMutableSet()
+                    toBypass.add(packageName)
+                    for (pkg in toBypass) {
+                        try { builder.addDisallowedApplication(pkg) } catch (e: Exception) { Log.w(TAG, "bypass $pkg failed: ${e.message}") }
+                    }
+                    Log.i(TAG, "Split bypass: bypassing ${toBypass.size} apps")
+                }
+                "only" -> {
+                    // Only selected apps via VPN (self naturally bypassed unless user selected it)
+                    for (pkg in splitApps) {
+                        try { builder.addAllowedApplication(pkg) } catch (e: Exception) { Log.w(TAG, "only $pkg failed: ${e.message}") }
+                    }
+                    Log.i(TAG, "Split only: ${splitApps.size} apps via VPN")
+                }
+                else -> {
+                    try {
+                        builder.addDisallowedApplication(packageName)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not disallow self: ${e.message}")
+                    }
+                }
             }
             vpnInterface = builder.establish()
             if (vpnInterface != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -249,6 +276,8 @@ class PaqetNGVpnService : VpnService() {
         /** Broadcast sent when VPN is connected so Quick Settings tile can update. */
         const val ACTION_VPN_STARTED = "com.tagh6668.paqetng.vpn.STARTED"
         const val EXTRA_SOCKS_PORT = "socks_port"
+        const val EXTRA_SPLIT_MODE = "split_mode"
+        const val EXTRA_SPLIT_APPS = "split_apps"
         private const val DEFAULT_PORT = 1284
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "vpn_channel"

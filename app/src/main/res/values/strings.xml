@@ -42,4 +42,18 @@
     <string name="pref_connection_mode">Mode</string>
     <string name="pref_connection_mode_vpn">VPN (TUN)</string>
     <string name="pref_connection_mode_socks">SOCKS only</string>
+    <string name="pref_split_mode">Split tunneling</string>
+    <string name="pref_split_mode_off">Off (all apps via VPN)</string>
+    <string name="pref_split_mode_bypass">Bypass VPN for selected apps</string>
+    <string name="pref_split_mode_only">Only selected apps via VPN</string>
+    <string name="pref_split_apps">Select apps</string>
+    <string name="pref_split_apps_summary">Choose apps for split tunneling (%1$d selected)</string>
+    <string name="pref_split_apps_summary_none">No apps selected</string>
+    <string name="pref_split_show_system">Show system apps</string>
+    <string name="pref_split_show_system_summary">Include system apps in the list</string>
+    <string name="split_apps_title">Split tunneling apps</string>
+    <string name="split_apps_search_hint">Search apps</string>
+    <string name="split_apps_empty">No apps found</string>
+    <string name="split_apps_select_all">Select all</string>
+    <string name="split_apps_deselect_all">Deselect all</string>
 </resources>

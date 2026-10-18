@@ -23,6 +23,9 @@ private val AUTO_RECONNECT_KEY = booleanPreferencesKey("auto_reconnect")
 private val SOCKS_LISTEN_LAN_KEY = booleanPreferencesKey("socks_listen_lan")
 private val LOG_LEVEL_KEY = stringPreferencesKey("log_level")
 private val CONNECTION_MODE_KEY = stringPreferencesKey("connection_mode")
+private val SPLIT_MODE_KEY = stringPreferencesKey("split_mode")
+private val SPLIT_APPS_KEY = stringPreferencesKey("split_apps")
+private val SPLIT_SHOW_SYSTEM_KEY = booleanPreferencesKey("split_show_system")
 
 enum class ThemePref(val value: String) {
     LIGHT("light"),
@@ -76,6 +79,19 @@ class SettingsRepository(private val context: Context) {
         prefs[CONNECTION_MODE_KEY] ?: DEFAULT_CONNECTION_MODE
     }
 
+    val splitMode: Flow<String> = context.settingsDataStore.data.map { prefs ->
+        prefs[SPLIT_MODE_KEY] ?: DEFAULT_SPLIT_MODE
+    }
+
+    val splitApps: Flow<Set<String>> = context.settingsDataStore.data.map { prefs ->
+        val raw = prefs[SPLIT_APPS_KEY] ?: ""
+        if (raw.isBlank()) emptySet() else raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+    }
+
+    val splitShowSystem: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
+        prefs[SPLIT_SHOW_SYSTEM_KEY] ?: DEFAULT_SPLIT_SHOW_SYSTEM
+    }
+
     suspend fun setTheme(theme: ThemePref) {
         context.settingsDataStore.edit { it[THEME_KEY] = theme.value }
     }
@@ -119,6 +135,24 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
+    suspend fun setSplitMode(mode: String) {
+        context.settingsDataStore.edit {
+            it[SPLIT_MODE_KEY] = if (mode in SPLIT_MODES) mode else DEFAULT_SPLIT_MODE
+        }
+    }
+
+    suspend fun setSplitApps(apps: Set<String>) {
+        context.settingsDataStore.edit {
+            val filtered = apps.map { s -> s.trim() }.filter { s -> s.isNotEmpty() }.toSet()
+            if (filtered.isEmpty()) it.remove(SPLIT_APPS_KEY)
+            else it[SPLIT_APPS_KEY] = filtered.joinToString(",")
+        }
+    }
+
+    suspend fun setSplitShowSystem(show: Boolean) {
+        context.settingsDataStore.edit { it[SPLIT_SHOW_SYSTEM_KEY] = show }
+    }
+
     companion object {
         const val DEFAULT_SOCKS_PORT = 1284
         const val DEFAULT_CONNECTION_CHECK_URL = "https://www.gstatic.com/generate_204"
@@ -133,5 +167,8 @@ class SettingsRepository(private val context: Context) {
 
         val LOG_LEVELS = listOf("none", "debug", "info", "warn", "error", "fatal")
         val CONNECTION_MODES = listOf("vpn", "socks")
+        const val DEFAULT_SPLIT_MODE = "disabled"
+        const val DEFAULT_SPLIT_SHOW_SYSTEM = false
+        val SPLIT_MODES = listOf("disabled", "bypass", "only")
     }
 }

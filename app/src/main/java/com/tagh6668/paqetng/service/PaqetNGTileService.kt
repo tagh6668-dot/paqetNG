@@ -149,8 +149,12 @@ class PaqetNGTileService : TileService() {
                 return@Thread
             }
             mainHandler.postDelayed({
+                val splitMode = runBlocking { settingsRepo.splitMode.first() }
+                val splitApps = runBlocking { settingsRepo.splitApps.first() }
                 val intent = Intent(applicationContext, PaqetNGVpnService::class.java)
                     .putExtra(PaqetNGVpnService.EXTRA_SOCKS_PORT, config.socksPort())
+                    .putExtra(PaqetNGVpnService.EXTRA_SPLIT_MODE, splitMode)
+                    .putStringArrayListExtra(PaqetNGVpnService.EXTRA_SPLIT_APPS, ArrayList(splitApps))
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     applicationContext.startForegroundService(intent)
                 } else {

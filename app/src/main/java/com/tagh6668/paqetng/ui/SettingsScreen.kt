@@ -59,6 +59,7 @@ private object SettingsSpacing {
 fun SettingsScreen(
     settingsRepository: SettingsRepository,
     onBack: () -> Unit,
+    onSplitAppsClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val theme by settingsRepository.theme.collectAsState(initial = ThemePref.SYSTEM)
@@ -71,6 +72,8 @@ fun SettingsScreen(
     val socksListenLan by settingsRepository.socksListenLan.collectAsState(initial = SettingsRepository.DEFAULT_SOCKS_LISTEN_LAN)
     val logLevel by settingsRepository.logLevel.collectAsState(initial = SettingsRepository.DEFAULT_LOG_LEVEL)
     val connectionMode by settingsRepository.connectionMode.collectAsState(initial = SettingsRepository.DEFAULT_CONNECTION_MODE)
+    val splitMode by settingsRepository.splitMode.collectAsState(initial = SettingsRepository.DEFAULT_SPLIT_MODE)
+    val splitApps by settingsRepository.splitApps.collectAsState(initial = emptySet())
     val scope = rememberCoroutineScope()
 
     Scaffold(
@@ -192,6 +195,25 @@ fun SettingsScreen(
                         },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true
+                )
+            }
+
+            // ——— Split tunneling ———
+            PreferenceSection(title = "Split tunneling") {
+                PreferenceSplitModeRow(
+                    splitMode = splitMode,
+                    onModeSelected = { scope.launch { settingsRepository.setSplitMode(it) } }
+                )
+                val splitSummary = when {
+                    splitMode == "disabled" -> stringResource(R.string.pref_split_mode_off)
+                    splitApps.isEmpty() -> stringResource(R.string.pref_split_apps_summary_none)
+                    else -> stringResource(R.string.pref_split_apps_summary, splitApps.size)
+                }
+                ListItem(
+                    modifier = Modifier.fillMaxWidth().clickable { onSplitAppsClick() },
+                    headlineContent = { Text(stringResource(R.string.pref_split_apps), style = MaterialTheme.typography.bodyLarge) },
+                    supportingContent = { Text(splitSummary, style = MaterialTheme.typography.bodySmall) },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent, headlineColor = MaterialTheme.colorScheme.onSurface, supportingColor = MaterialTheme.colorScheme.onSurfaceVariant)
                 )
             }
         }
@@ -399,3 +421,37 @@ private fun PreferenceConnectionModeRow(
         }
     }
 }
+
+@Composable
+private fun PreferenceSplitModeRow(
+    splitMode: String,
+    onModeSelected: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val label = when (splitMode) {
+        "disabled" -> stringResource(R.string.pref_split_mode_off)
+        "bypass" -> stringResource(R.string.pref_split_mode_bypass)
+        "only" -> stringResource(R.string.pref_split_mode_only)
+        else -> splitMode
+    }
+    Box(modifier = Modifier.fillMaxWidth()) {
+        ListItem(
+            modifier = Modifier.fillMaxWidth().clickable { expanded = true },
+            headlineContent = { Text(stringResource(R.string.pref_split_mode), style = MaterialTheme.typography.bodyLarge) },
+            supportingContent = { Text(label, style = MaterialTheme.typography.bodySmall) },
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent, headlineColor = MaterialTheme.colorScheme.onSurface, supportingColor = MaterialTheme.colorScheme.onSurfaceVariant)
+        )
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            SettingsRepository.SPLIT_MODES.forEach { mode ->
+                val l = when (mode) {
+                    "disabled" -> stringResource(R.string.pref_split_mode_off)
+                    "bypass" -> stringResource(R.string.pref_split_mode_bypass)
+                    "only" -> stringResource(R.string.pref_split_mode_only)
+                    else -> mode
+                }
+                DropdownMenuItem(text = { Text(l) }, onClick = { onModeSelected(mode); expanded = false })
+            }
+        }
+    }
+}
+
