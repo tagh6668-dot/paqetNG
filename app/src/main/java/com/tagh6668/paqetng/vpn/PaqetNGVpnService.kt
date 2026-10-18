@@ -170,9 +170,13 @@ class PaqetNGVpnService : VpnService() {
                 .setSession(getString(R.string.app_name))
                 .setMtu(1500)
                 .addAddress("10.0.0.2", 30)
+                .addAddress("fd00::2", 64)
                 .addRoute("0.0.0.0", 0)
+                .addRoute("::", 0)
                 .addDnsServer("8.8.8.8")
                 .addDnsServer("8.8.4.4")
+                .addDnsServer("2001:4860:4860::8888")
+                .addDnsServer("2001:4860:4860::8844")
                 .setBlocking(false)
             // Split tunneling
             val effectiveMode = when (splitMode) {

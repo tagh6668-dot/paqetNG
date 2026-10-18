@@ -46,12 +46,14 @@ class Tun2SocksRunner(
     private fun buildHevConfig(): String {
         val mtu = 1500
         val ipv4Client = "10.0.0.2"
+        val ipv6Client = "fd00::2"
         val tcpTimeout = 300_000  // ms
         val udpTimeout = 60_000
         return buildString {
             appendLine("tunnel:")
             appendLine("  mtu: $mtu")
             appendLine("  ipv4: $ipv4Client")
+            appendLine("  ipv6: '$ipv6Client'")
             appendLine("socks5:")
             appendLine("  port: $socksPort")
             appendLine("  address: 127.0.0.1")

@@ -1,3 +1,10 @@
+## [v1.3.8]
+
+### Fix
+- **Dual-stack TUN** (`PaqetNGVpnService` + `Tun2SocksRunner`): VPN previously created an IPv4-only TUN (`10.0.0.2/30` + `0.0.0.0/0` + Google v4 DNS). IPv6/AAAA traffic bypassed the TUN entirely, going direct and appearing "faster" than tunneled IPv4. Now adds `fd00::2/64` + `::/0` + Google v6 DNS (`2001:4860:4860::8888/8844`) to the Builder and `ipv6: 'fd00::2'` to the hev-socks5-tunnel config, so both families are routed through tun2socks -> SOCKS -> paqet.
+- **Hash collision for IPv4-mapped IPv6** (`paqet/internal/pkg/hash/ip_addr.go`): `IPAddr` checked `len(ip)==4` instead of `To4()!=nil`, so 16-byte `::ffff:x.x.x.x` addresses were hashed via the IPv6 XOR path and could collide with distinct v4 hosts. Now uses `To4()` normalization, matching Go's own IP canonicalization. Core bumped to `v1.0.0-alpha.22`.
+
+
 # Changelog
 
 ## [v1.3.7]
