@@ -242,12 +242,18 @@ class PaqetNGVpnService : VpnService() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            nm.getNotificationChannel(CHANNEL_ID)?.let { existing ->
+                if (existing.importance < NotificationManager.IMPORTANCE_HIGH) {
+                    nm.deleteNotificationChannel(CHANNEL_ID)
+                }
+            }
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "VPN",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_HIGH
             ).apply { setShowBadge(false) }
-            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
+            nm.createNotificationChannel(channel)
         }
     }
 

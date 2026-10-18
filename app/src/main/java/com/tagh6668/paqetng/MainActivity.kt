@@ -1,6 +1,8 @@
 package com.tagh6668.paqetng
 
 import android.content.Intent
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -34,6 +36,7 @@ import com.tagh6668.paqetng.ui.SplitAppsScreen
 import com.tagh6668.paqetng.ui.theme.PaqetNGTheme
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
+import androidx.core.content.ContextCompat
 import com.tagh6668.paqetng.vpn.PaqetNGVpnService
 
 class MainActivity : ComponentActivity() {
@@ -73,8 +76,37 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) {
+            android.util.Log.w("MainActivity", "POST_NOTIFICATIONS denied - VPN notification will be hidden on Android 13+")
+            android.widget.Toast.makeText(this, "Notification permission denied - disconnect button will not appear in shade", android.widget.Toast.LENGTH_LONG).show()
+        }
+        // If user granted, next connect will show notification normally
+    }
+
+    private fun hasNotificationPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        } else true
+    }
+
+    @Suppress("unused")
+    private fun ensureNotificationPermission(onReady: () -> Unit) {
+        if (hasNotificationPermission()) { onReady(); return }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            onReady()
+        } else onReady()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Proactively request POST_NOTIFICATIONS on first launch (Android 13+) so FGS notification is visible
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission()) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         enableEdgeToEdge()
         setContent {
             val theme by settingsRepository.theme.collectAsState(initial = ThemePref.SYSTEM)
@@ -180,6 +212,9 @@ class MainActivity : ComponentActivity() {
     private fun handleConnect(config: PaqetConfig?, connectionMode: String) {
         if (config == null) return
         logBuffer.clear()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission()) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         if (connectionMode == "socks") {
             logBuffer.append(AppLogBuffer.TAG_VPN, "Starting paqet (SOCKS-only mode); showing disconnect notification.")
             viewModel.connect(config) {

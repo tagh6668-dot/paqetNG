@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.3.2]
+
+### Fix
+- Fix notification never appearing on MIUI/Android 13+: `POST_NOTIFICATIONS` was never requested so channel stayed `importance=NONE` (MIUI blocks shade). Now `MainActivity` requests the runtime permission proactively on first launch and again on Connect; if denied a toast explains Disconnect will be hidden. Both `vpn_channel` and `socks_channel` upgraded from `IMPORTANCE_LOW` to `HIGH` and auto-migrate existing installs (delete+recreate) so ongoing notification is visible on MIUI 14.
+
 ## [v1.3.1]
 
 ### Feat
