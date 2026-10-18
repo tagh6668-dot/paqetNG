@@ -243,16 +243,27 @@ class PaqetNGVpnService : VpnService() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            // Bug #9 fix: never delete user's channel (would reset importance/muted state). Only create if absent.
+            // Silent migration: downgrade any previous HIGH/noisy channel to LOW silent
+            nm.getNotificationChannel(CHANNEL_ID)?.let { existing ->
+                val needsRecreate = existing.importance != NotificationManager.IMPORTANCE_LOW
+                        || existing.sound != null || existing.shouldVibrate()
+                if (needsRecreate) nm.deleteNotificationChannel(CHANNEL_ID)
+            }
             if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "VPN",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply { setShowBadge(false) }
+                val channel = NotificationChannel(
+                    CHANNEL_ID,
+                    "VPN",
+                    NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    setShowBadge(false)
+                    setSound(null, null)
+                    enableVibration(false)
+                    enableLights(false)
+                    description = "VPN connection status (silent)"
+                }
                 nm.createNotificationChannel(channel)
             }
-            }
+        }
     }
 
     private fun buildNotification(connecting: Boolean = false): Notification {
@@ -275,6 +286,14 @@ class PaqetNGVpnService : VpnService() {
             .setContentIntent(contentPending)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, getString(R.string.notification_action_disconnect), stopPending)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setDefaults(0)
+            .setSound(null)
+            .setVibrate(null)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .build()
     }
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## [v1.3.7]
+
+### Fix
+- **Silent notification**: اتصال VPN/SOCKS ديگر پاپ‌آپ، صدا يا ويبره ندارد. هر دو کانال vpn_channel و socks_channel به IMPORTANCE_LOW (بي‌صدا/بي‌ويبره/setSound(null)) تغيير کردند و NotificationCompat نيز setSilent(true), setOnlyAlertOnce(true), PRIORITY_LOW, VISIBILITY_SECRET دارد. نوتيفيکيشن همچنان به‌صورت ongoing در سايه باقي مي‌ماند (براي Disconnect) اما فقط وقتي خودتان پنل نوتيفيکيشن را باز کنيد ديده مي‌شود. کانال‌هاي قديمي HIGH به‌صورت خودکار مهاجرت (delete+recreate) مي‌شوند.
+
 ## [v1.3.6]
 
 ### Fix
