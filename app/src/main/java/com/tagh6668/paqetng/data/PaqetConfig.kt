@@ -283,5 +283,60 @@ data class PaqetConfig(
                 null
             }
         }
+
+        /** Parse clipboard text that may contain multiple configs (newline/comma/space separated paqet:// URIs or JSON lines). */
+        fun parseAllFromImport(text: String?, gson: com.google.gson.Gson): List<PaqetConfig> {
+            val t = text?.trim() ?: return emptyList()
+            if (t.isEmpty()) return emptyList()
+            // JSON array of configs: [{...}, {...}]
+            if (t.startsWith("[") && t.trimEnd().endsWith("]")) {
+                try {
+                    val arrType = object : com.google.gson.reflect.TypeToken<List<PaqetConfig>>() {}.type
+                    val list: List<PaqetConfig>? = gson.fromJson(t, arrType)
+                    if (list != null && list.isNotEmpty()) return list.map { it.withDefaults() }
+                } catch (_: Exception) {}
+            }
+            // Base64 encoded blob containing newline-separated paqet:// (v2ray share-link style) - try decode
+            val looksBase64 = t.length > 20 && t.lines().size == 1 && !t.contains("paqet://") && !t.trim().startsWith("{")
+            if (looksBase64) {
+                try {
+                    val padded = t.trim().replace("\n","").replace("\r","").replace(" ","")
+                    val pad = (4 - padded.length % 4) % 4
+                    val decoded = String(android.util.Base64.decode(padded + "=".repeat(pad), android.util.Base64.DEFAULT), Charsets.UTF_8).trim()
+                    if (decoded.contains("paqet://")) {
+                        val decodedList = parseAllFromImport(decoded, gson)
+                        if (decodedList.isNotEmpty()) return decodedList
+                    }
+                } catch (_: Exception) {}
+            }
+            // Split by lines: most reliable. Also handles one URI per line.
+            val rawLines = t.split("\n", "\r").map { it.trim() }.filter { it.isNotEmpty() }
+            // If only one line but contains multiple paqet:// separated by whitespace, split them
+            val candidates: List<String> = if (rawLines.size == 1) {
+                val single = rawLines[0]
+                // If line contains more than one paqet:// occurrence, split
+                val count = single.split("paqet://").size - 1
+                if (count > 1) {
+                    // split keeping delimiter
+                    single.split("\\s+".toRegex()).filter { it.isNotBlank() }
+                } else listOf(single)
+            } else rawLines
+            // If candidates hold paqet:// URIs, parse each
+            val uriParsed = candidates.mapNotNull { parseFromImport(it, gson) }
+            if (uriParsed.isNotEmpty()) return uriParsed
+            // Fallback: try to extract all paqet:// substrings with regex (handles copied text with extra whitespace)
+            val regex = Regex("paqet://[^\\s]+")
+            val found = regex.findAll(t).map { it.value }.toList()
+            if (found.size > 1) {
+                val multi = found.mapNotNull { parseFromImport(it, gson) }
+                if (multi.isNotEmpty()) return multi
+            }
+            // Final fallback: single config
+            val single = parseFromImport(t, gson)
+            return if (single != null) listOf(single) else emptyList()
+        }
+
+        /** Export multiple configs as newline-separated paqet:// links (for clipboard share). */
+        fun exportAllToText(configs: List<PaqetConfig>): String = configs.joinToString("\n") { it.toPaqetUri() }
     }
 }

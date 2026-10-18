@@ -97,20 +97,46 @@ class HomeViewModel(
 
     /** Parse text (paqet:// or JSON), add config. Returns true if parse succeeded (add is async). */
     fun addConfigFromImport(text: String?): Boolean {
-        val config = PaqetConfig.parseFromImport(text, gson) ?: return false
+        val configs = PaqetConfig.parseAllFromImport(text, gson)
+        if (configs.isEmpty()) return false
         viewModelScope.launch {
             val port = settingsRepository.socksPort.first()
-            val withPort = config.copy(
-                id = "",
-                socksListen = config.socksListen.ifEmpty { "127.0.0.1:$port" }
-            )
-            val newId = configRepository.add(withPort)
-            // Auto-select the newly imported profile
-            selectConfig(newId)
+            var lastId: String? = null
+            for (config in configs) {
+                val withPort = config.copy(
+                    id = "",
+                    socksListen = config.socksListen.ifEmpty { "127.0.0.1:$port" }
+                )
+                lastId = configRepository.add(withPort)
+            }
+            if (lastId != null) selectConfig(lastId)
             _showAddConfigDialog.value = false
         }
         return true
     }
+
+    /** Result of multi import: how many parsed/imported. */
+    fun addConfigsFromImportWithCount(text: String?): Int {
+        val configs = PaqetConfig.parseAllFromImport(text, gson)
+        if (configs.isEmpty()) return 0
+        viewModelScope.launch {
+            val port = settingsRepository.socksPort.first()
+            var lastId: String? = null
+            for (config in configs) {
+                val withPort = config.copy(
+                    id = "",
+                    socksListen = config.socksListen.ifEmpty { "127.0.0.1:$port" }
+                )
+                lastId = configRepository.add(withPort)
+            }
+            if (lastId != null) selectConfig(lastId)
+            _showAddConfigDialog.value = false
+        }
+        return configs.size
+    }
+
+    fun exportAllToClipboardText(configs: List<PaqetConfig>): String =
+        PaqetConfig.exportAllToText(configs)
 
     fun openAdd() {
         _showAddConfigDialog.value = false

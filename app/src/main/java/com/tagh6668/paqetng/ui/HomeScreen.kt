@@ -158,12 +158,14 @@ fun HomeScreen(
             onFromClipboard = {
                 val clip = (context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)?.primaryClip
                 val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()
-                if (!viewModel.addConfigFromImport(text)) {
-                    scope.launch {
-                        snackbarHostState.showSnackbar("Invalid or empty clipboard")
-                    }
+                val count = viewModel.addConfigsFromImportWithCount(text)
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        if (count == 0) "Invalid or empty clipboard" else if (count == 1) "Imported 1 config" else "Imported $count configs"
+                    )
                 }
-                viewModel.dismissAddConfigDialog()
+                // ViewModel already dismisses dialog on success; ensure dismiss on failure too
+                if (count == 0) viewModel.dismissAddConfigDialog()
             },
             onFromQrCode = {
                 qrScanLauncher.launch(ScanOptions())
@@ -209,6 +211,15 @@ fun HomeScreen(
                     }
                     IconButton(onClick = onLogsClick) {
                         Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Logs")
+                    }
+                    if (configs.isNotEmpty()) {
+                        IconButton(onClick = {
+                            val allText = viewModel.exportAllToClipboardText(configs)
+                            copyAllConfigsToClipboard(context, allText)
+                            scope.launch { snackbarHostState.showSnackbar("Exported ${configs.size} configs to clipboard") }
+                        }) {
+                            Icon(Icons.Default.Share, contentDescription = "Export all configs")
+                        }
                     }
                     IconButton(onClick = { viewModel.openAddConfigDialog() }) {
                         Icon(Icons.Default.Add, contentDescription = "Add config")
@@ -420,6 +431,11 @@ private fun AddConfigDialog(
             Button(onClick = onDismiss) { Text("Cancel") }
         }
     )
+}
+
+private fun copyAllConfigsToClipboard(context: Context, allText: String) {
+    (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+        .setPrimaryClip(ClipData.newPlainText("paqetNG configs", allText))
 }
 
 private fun copyConfigToClipboard(context: Context, config: PaqetConfig) {

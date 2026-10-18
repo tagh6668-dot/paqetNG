@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.3.3]
+
+### Feat
+- Export all configs: new toolbar action copies all profiles as newline-separated `paqet://` links to clipboard (one per line) for batch share/restore.
+- Import from clipboard: now imports multiple `paqet://` links at once (newline/space-separated, JSON array, or base64-encoded subscription blob). Shows count snackbar ("Imported N configs").
+
 ## [v1.3.2]
 
 ### Fix
