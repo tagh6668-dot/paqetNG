@@ -1,6 +1,21 @@
 # Changelog
 
+## [v1.3.6]
+
+### Fix
+- **P0 anti-RST dead code** (`PaqetRunner`/`RealDelayTester`): regex parsed `network.ipv4.addr:0` → `lastRawPort` always null, iptables anti-RST never installed → kernel RST killed RawIP connections on ccmni/rmnet. Now parses `server.addr` (`[ipv6]:port` and bare `ipv6`) via `parseServerPortFromYaml`.
+- **WiFi false RawIP**: `DefaultNetworkInfo` with empty `routes` gateway returned `router_mac:""` → paqet RawIP on WiFi. Now `isWifiInterface` + `resolveGatewayViaRoot` (ip route/neigh) and delegate to root path instead of silent RawIP.
+- **ANR on connect**: `MainActivity.doConnect` used `runBlocking { DataStore.first() }` on Main (×2) + 800ms delay. Now `CoroutineScope(Dispatchers.Main).launch { splitMode/splitApps.first() }`.
+- **ensureBinary 16 MB on Main**: `readBytes()` ×2 on Main. Rewritten to `openFd` size check + streaming SHA-256 (8K buf) via `sha256OfAsset/File` + `copyAssetToFile`.
+- **IPv6 placeholder** (`PaqetYaml`): `[::]:0` fallback masked missing IPv6. Now `IllegalStateException` fail-fast; caller must refresh network info (`HomeViewModel` now try/catches).
+- **IPv6 server detection**: `isIpv6Server` only checked `[`. Now handles bare `::` and `colonCount>=2` heuristic.
+- **Tile double-tap race**: `PaqetNGTileService` could start two paqets on quick tap. Added `@Volatile tileBusy` with `try/finally`, `isRunning` guard and batched `runBlocking`.
+- **RealDelayTester iptables race + leak**: 10 parallel testers raced `iptables -D`. Now ref-counted `antiRstRefCount`/`antiRstLock` + `cleanupOrphanedDirs()` for `paqet_test_*`.
+- **Notification channel reset**: `PaqetNGVpnService`/`SocksNotificationService` deleted user-muted channel each launch. Now `if (getNotificationChannel==null) create` only.
+- **Maintainability**: `PaqetConfig.withDefaults` verbose `try/catch` noted (kept to avoid regression).
+
 ## [v1.3.5]
+
 
 ### Feat
 - Test real delays v2: parallel x10 isolated tester (no VPN disconnect needed). Each config runs in its own temp dir with its own paqet binary copy + ephemeral SOCKS port (28k range) + separate anti-RST iptables, so the active VPN/SOCKS session is never touched. Concurrency is 10 (Semaphore). Timeout and check URL now both follow Settings > Connection check (seconds 3-60, coerced to ms), likewise SOCKS LAN setting and log level. Results update live per-config (pill + spinner) via StateFlow; list auto-sorts low->high after batch (timeouts last).

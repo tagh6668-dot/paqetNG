@@ -34,8 +34,9 @@ import com.tagh6668.paqetng.ui.PacketDumpScreen
 import com.tagh6668.paqetng.ui.SettingsScreen
 import com.tagh6668.paqetng.ui.SplitAppsScreen
 import com.tagh6668.paqetng.ui.theme.PaqetNGTheme
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import androidx.core.content.ContextCompat
 import com.tagh6668.paqetng.vpn.PaqetNGVpnService
 
@@ -244,11 +245,13 @@ class MainActivity : ComponentActivity() {
         viewModel.connect(config) {
             logBuffer.append(AppLogBuffer.TAG_VPN, "Paqet started; waiting for SOCKS to bind then starting VPN…")
             // Give paqet time to bind to 127.0.0.1:socksPort before tun2socks tries to connect (same idea as v2rayNG).
-            val splitMode = runBlocking { settingsRepository.splitMode.first() }
-            val splitApps = runBlocking { settingsRepository.splitApps.first() }
-            val runnable = Runnable {
-                logBuffer.append(AppLogBuffer.TAG_VPN, "VPN starting port=${config.socksPort()} config=${config.name.ifEmpty { config.serverAddr }} mode=$splitMode apps=${splitApps.size}")
-                val intent = Intent(this@MainActivity, PaqetNGVpnService::class.java)
+            // Bug #3: off Main via coroutine (was runBlocking on Main)
+            kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
+                val splitMode = settingsRepository.splitMode.first()
+                val splitApps = settingsRepository.splitApps.first()
+                val runnable = Runnable {
+                    logBuffer.append(AppLogBuffer.TAG_VPN, "VPN starting port=${config.socksPort()} config=${config.name.ifEmpty { config.serverAddr }} mode=$splitMode apps=${splitApps.size}")
+                    val intent = Intent(this@MainActivity, PaqetNGVpnService::class.java)
                     .putExtra(PaqetNGVpnService.EXTRA_SOCKS_PORT, config.socksPort())
                     .putExtra(PaqetNGVpnService.EXTRA_SPLIT_MODE, splitMode)
                     .putStringArrayListExtra(PaqetNGVpnService.EXTRA_SPLIT_APPS, ArrayList(splitApps))
@@ -262,6 +265,7 @@ class MainActivity : ComponentActivity() {
             }
             pendingVpnStartRunnable = runnable
             mainHandler.postDelayed(runnable, 800)
+            }
         }
     }
 

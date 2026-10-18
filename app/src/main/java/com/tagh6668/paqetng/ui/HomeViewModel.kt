@@ -237,7 +237,8 @@ class HomeViewModel(
                 config.copy(socksListen = socksListen)
             })
             val summary = "server=${configWithNetwork.serverAddr} iface=${configWithNetwork.networkInterface} ip=${configWithNetwork.ipv4Addr} ipv6=${configWithNetwork.ipv6Addr} routerMac=${configWithNetwork.routerMac} socks=${configWithNetwork.socksListen}"
-            val started = paqetRunner.startWithYaml(configWithNetwork.toPaqetYaml(logLevel = logLevel), summary)
+            val yaml = try { configWithNetwork.toPaqetYaml(logLevel = logLevel) } catch (e: IllegalStateException) { android.util.Log.e(TAG, "YAML error", e); return@launch }
+            val started = paqetRunner.startWithYaml(yaml, summary)
             if (started) {
                 _connectedConfigId.value = config.id
                 onPaqetStarted?.invoke()

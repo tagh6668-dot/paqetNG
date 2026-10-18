@@ -53,11 +53,27 @@ class DefaultNetworkInfoProvider(private val context: Context) {
                 .firstOrNull { it.gateway != null && it.isDefaultRoute && it.gateway is Inet4Address }
                 ?.gateway
                 ?: lp.routes.firstOrNull { it.gateway != null && it.gateway is Inet4Address }?.gateway
-            val gatewayIp = gateway?.hostAddress ?: ""
+            var gatewayIp = gateway?.hostAddress ?: ""
             Log.d(TAG, "gatewayIp=$gatewayIp ipv6Addr=$ipv6Addr")
+            if (gatewayIp.isEmpty() && isWifiInterface(interfaceName)) {
+                gatewayIp = resolveGatewayViaRoot(interfaceName) ?: ""
+                Log.d(TAG, "gatewayIp fallback WiFi " + interfaceName + ": " + gatewayIp)
+                if (gatewayIp.isEmpty()) {
+                    Log.w(TAG, "WiFi " + interfaceName + " no gateway — delegate to root")
+                    return@withContext getDefaultNetworkInfoViaRoot()
+                }
+            }
             val routerMacFromFile = readMacFromArp(gatewayIp)
             val routerMacFromRoot = if (routerMacFromFile == null) readMacFromArpViaRoot(gatewayIp) else null
-            val routerMac = routerMacFromFile ?: routerMacFromRoot ?: ""
+            var routerMac = routerMacFromFile ?: routerMacFromRoot ?: ""
+            if (routerMac.isEmpty() && isWifiInterface(interfaceName)) {
+                val neighFallback = runSuCommand("ip neigh show dev " + interfaceName)?.lines()?.firstNotNullOfOrNull { line ->
+                    val parts = line.split(Regex("\\s+"))
+                    val ll = parts.indexOf("lladdr")
+                    if (ll >= 0 && ll + 1 < parts.size) parts[ll + 1].takeIf { it.contains(":") && it != "00:00:00:00:00:00" } else null
+                }
+                if (neighFallback != null) { routerMac = neighFallback; Log.d(TAG, "routerMac fallback neigh " + interfaceName + ": " + routerMac) } else { Log.w(TAG, "WiFi " + interfaceName + " no MAC — delegate to root"); return@withContext getDefaultNetworkInfoViaRoot() }
+            }
             Log.d(TAG, "routerMac: fromFile=$routerMacFromFile fromRoot=$routerMacFromRoot final=$routerMac")
             DefaultNetworkInfo(interfaceName, ipv4Addr, ipv6Addr, routerMac)
         } ?: getDefaultNetworkInfoViaRoot()
@@ -206,6 +222,8 @@ class DefaultNetworkInfoProvider(private val context: Context) {
         return null
     }
 
+    private fun isWifiInterface(iface: String): Boolean { val n = iface.lowercase(); return n.startsWith("wlan") || n.startsWith("wifi") || n.startsWith("ap") }
+    private fun resolveGatewayViaRoot(iface: String): String? { val rs = runSuCommand("ip route show dev " + iface); rs?.lines()?.forEach { line -> Regex("\\bvia\\s+(\\S+)").find(line)?.let { return it.groupValues[1] } }; val g = runSuCommand("ip route get 8.8.8.8"); g?.let { Regex("\\bvia\\s+(\\S+)").find(it)?.let { m -> return m.groupValues[1] } }; return null }
     private fun readMacFromArp(ip: String): String? {
         if (ip.isEmpty()) return null
         val arpFile = File("/proc/net/arp")

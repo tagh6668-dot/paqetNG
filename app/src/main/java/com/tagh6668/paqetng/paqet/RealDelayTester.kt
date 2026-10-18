@@ -68,6 +68,8 @@ class RealDelayTester(
                 try { killHandle(h) } catch (_: Exception) {}
             }
             activeHandles.clear()
+        // Clean orphaned temp dirs from previous crash
+        try { cleanupOrphanedDirs() } catch (_: Exception) {}
         }
         _testingIds.value = emptySet()
         Log.d(TAG, "cancelled")
@@ -264,7 +266,7 @@ class RealDelayTester(
         val cfgFile = File(dir, "config.yaml")
         try { cfgFile.writeText(yaml) } catch (_: Exception) { return null }
         val bin = ensureBinaryCopy(dir) ?: run { try { dir.deleteRecursively() } catch (_: Exception) {}; return null }
-        val rawPort = Regex("""addr:\s*"[^"]*:(\d+)"""").find(yaml)?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it in 1..65535 }
+        val rawPort = parseServerPortFromYaml(yaml)
         if (rawPort != null) installAntiRst(rawPort)
         val proc = try {
             ProcessBuilder("su", "-c", "${bin.absolutePath} run -c ${cfgFile.absolutePath}")
@@ -300,13 +302,30 @@ class RealDelayTester(
         try { Thread.sleep(60) } catch (_: Exception) {}
     }
 
+    // Ref-counted anti-RST so parallel testers sharing same server port don't delete each other's rule (Bug #8)
+    private val antiRstRefCount = mutableMapOf<Int, Int>()
+    private val antiRstLock = Any()
+
     private fun installAntiRst(port: Int) {
-        runSu("iptables -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || iptables -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP")
-        runSu("ip6tables -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || ip6tables -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP")
+        val shouldInstall = synchronized(antiRstLock) {
+            val c = (antiRstRefCount[port] ?: 0) + 1
+            antiRstRefCount[port] = c
+            c == 1
+        }
+        if (shouldInstall) {
+            runSu("iptables -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || iptables -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP")
+            runSu("ip6tables -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || ip6tables -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP")
+        }
     }
     private fun removeAntiRst(port: Int) {
-        runSu("iptables -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null; true")
-        runSu("ip6tables -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null; true")
+        val shouldRemove = synchronized(antiRstLock) {
+            val c = (antiRstRefCount[port] ?: 1) - 1
+            if (c <= 0) { antiRstRefCount.remove(port); true } else { antiRstRefCount[port] = c; false }
+        }
+        if (shouldRemove) {
+            runSu("iptables -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null; true")
+            runSu("ip6tables -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null; true")
+        }
     }
     private fun runSu(cmd: String) {
         try {
@@ -314,6 +333,30 @@ class RealDelayTester(
             p.inputStream.bufferedReader().readText()
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) p.waitFor(4, TimeUnit.SECONDS) else { val t = Thread { p.waitFor() }; t.start(); t.join(4000) }
             p.destroy()
+        } catch (_: Exception) {}
+    }
+
+    private fun parseServerPortFromYaml(yaml: String): Int? {
+        val m = Regex("""(?m)^server:\\s*\\n\\s*addr:\\s*"([^"]+)""""").find(yaml) ?: return null
+        val addr = m.groupValues[1].trim()
+        if (addr.isEmpty()) return null
+        return try {
+            when {
+                addr.startsWith("[") -> {
+                    val close = addr.lastIndexOf(']')
+                    if (close < 0) null else addr.substring(close + 1).trim().removePrefix(":").toIntOrNull()?.takeIf { it in 1..65535 }
+                }
+                else -> addr.substringAfterLast(':', "").toIntOrNull()?.takeIf { it in 1..65535 }
+            }
+        } catch (_: Exception) { null }
+    }
+
+    /** Delete orphaned paqet_test_* dirs left from previous crash (Bug #8 disk). Call on app start if needed. */
+    fun cleanupOrphanedDirs() {
+        try {
+            context.filesDir.listFiles()?.filter { it.isDirectory && it.name.startsWith("paqet_test_") }?.forEach {
+                try { it.deleteRecursively() } catch (_: Exception) {}
+            }
         } catch (_: Exception) {}
     }
 }

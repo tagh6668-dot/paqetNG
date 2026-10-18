@@ -243,18 +243,16 @@ class PaqetNGVpnService : VpnService() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            nm.getNotificationChannel(CHANNEL_ID)?.let { existing ->
-                if (existing.importance < NotificationManager.IMPORTANCE_HIGH) {
-                    nm.deleteNotificationChannel(CHANNEL_ID)
-                }
-            }
+            // Bug #9 fix: never delete user's channel (would reset importance/muted state). Only create if absent.
+            if (nm.getNotificationChannel(CHANNEL_ID) == null) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "VPN",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply { setShowBadge(false) }
-            nm.createNotificationChannel(channel)
-        }
+                nm.createNotificationChannel(channel)
+            }
+            }
     }
 
     private fun buildNotification(connecting: Boolean = false): Notification {

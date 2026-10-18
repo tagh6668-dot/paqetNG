@@ -37,10 +37,7 @@ class PaqetRunner(
     private var lastConfigYaml: String? = null
     private var lastSessionSummary: String? = null
 
-    /**
-     * Raw TCP port paqet sniffs on (parsed from ipv4Addr "IP:port").
-     * Used for the anti-RST iptables rule; cleared on [stop()].
-     */
+    /** Server port for anti-RST iptables rule; cleared on [stop()]. */
     private var lastRawPort: Int? = null
 
     /**
@@ -80,6 +77,22 @@ class PaqetRunner(
             "ip6tables -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null; true",
             tag = "anti-rst remove v6 (port=$port)"
         )
+    }
+
+    /** Parse server port from generated YAML: server:\n  addr: "host:port" . Supports [ipv6]:port and bare ipv6. */
+    private fun parseServerPortFromYaml(yaml: String): Int? {
+        val m = Regex("""(?m)^server:\\s*\\n\\s*addr:\\s*"([^"]+)""""").find(yaml) ?: return null
+        val addr = m.groupValues[1].trim()
+        if (addr.isEmpty()) return null
+        return try {
+            when {
+                addr.startsWith("[") -> {
+                    val close = addr.lastIndexOf(']')
+                    if (close < 0) null else addr.substring(close + 1).trim().removePrefix(":").toIntOrNull()?.takeIf { it in 1..65535 }
+                }
+                else -> addr.substringAfterLast(':', "").toIntOrNull()?.takeIf { it in 1..65535 }
+            }
+        } catch (_: Exception) { null }
     }
 
     /** Runs a root shell command on a background-safe blocking call; returns stdout or null. */
@@ -132,30 +145,70 @@ class PaqetRunner(
     /**
      * Copies the paqet binary from assets to app filesDir and makes it executable.
      * Prefers ABI-specific asset (arm64-v8a/paqet, armeabi-v7a/paqet) when built from submodule; else uses "paqet".
-     * Always ensures the on-disk binary matches the APK asset (fixes stale binary after APK update —
-     * old code returned early if file existed, so new APK never took effect).
+     * Always ensures the on-disk binary matches the APK asset (fixes stale binary after APK update).
+     * Uses streaming SHA-256 compare to avoid 16 MB allocation on Main thread (Bug #4).
      */
     fun ensureBinary(): Boolean {
         return try {
             val assetPath = getPaqetAssetPath()
-            // Read asset bytes first so we can compare with existing file
-            val assetBytes = context.assets.open(assetPath).use { it.readBytes() }
-            if (binaryFile.exists() && binaryFile.canExecute() && binaryFile.length() == assetBytes.size.toLong()) {
-                // Quick size check passed — verify content to avoid stale binary after update
-                val onDisk = try { binaryFile.readBytes() } catch (_: Exception) { null }
-                if (onDisk != null && onDisk.contentEquals(assetBytes)) {
+            if (!binaryFile.exists() || !binaryFile.canExecute()) {
+                copyAssetToFile(assetPath, binaryFile)
+                return true
+            }
+            // Size check via AssetFileDescriptor when available
+            val assetLen = try { context.assets.openFd(assetPath).use { it.length } } catch (_: Exception) { -1L }
+            if (assetLen != -1L && binaryFile.length() != assetLen) {
+                copyAssetToFile(assetPath, binaryFile)
+                return true
+            }
+            // Streaming digest compare
+            val assetDigest = sha256OfAsset(assetPath)
+            val fileDigest = sha256OfFile(binaryFile)
+            if (assetDigest != null && fileDigest != null && assetDigest.contentEquals(fileDigest)) {
+                return true
+            }
+            if (assetLen == -1L) {
+                // No length info — fall back to digest mismatch => rewrite
+                // If digest failed (e.g. asset not readable), rewrite anyway
+                if (assetDigest == null || fileDigest == null) {
+                    copyAssetToFile(assetPath, binaryFile)
                     return true
                 }
             }
-            // (Re)write — covers first install and stale-binary-after-update
-            binaryFile.parentFile?.mkdirs()
-            binaryFile.outputStream().use { it.write(assetBytes) }
-            binaryFile.setExecutable(true, false)
+            copyAssetToFile(assetPath, binaryFile)
             true
         } catch (e: IOException) {
             false
         }
     }
+
+    private fun copyAssetToFile(assetPath: String, dst: File) {
+        context.assets.open(assetPath).use { input ->
+            dst.parentFile?.mkdirs()
+            dst.outputStream().use { out -> input.copyTo(out) }
+        }
+        dst.setExecutable(true, false)
+    }
+
+    private fun sha256OfAsset(assetPath: String): ByteArray? = try {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        context.assets.open(assetPath).use { ins ->
+            val buf = ByteArray(8192)
+            var n: Int
+            while (ins.read(buf).also { n = it } != -1) md.update(buf, 0, n)
+        }
+        md.digest()
+    } catch (_: Exception) { null }
+
+    private fun sha256OfFile(file: File): ByteArray? = try {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { ins ->
+            val buf = ByteArray(8192)
+            var n: Int
+            while (ins.read(buf).also { n = it } != -1) md.update(buf, 0, n)
+        }
+        md.digest()
+    } catch (_: Exception) { null }
 
     /**
      * Checks whether root (su) is available. Runs on a background thread; result via [rootAvailable].
@@ -242,10 +295,8 @@ class PaqetRunner(
         killAnyExistingPaqetBlocking()
         lastConfigYaml = configYaml
         lastSessionSummary = sessionSummary
-        // Parse raw port ("IP:port" in ipv4.addr) for the anti-RST iptables rule.
-        lastRawPort = Regex("""addr:\s*"[^"]*:(\d+)"""").find(configYaml)
-            ?.groupValues?.get(1)?.toIntOrNull()
-            ?.takeIf { it in 1..65535 }
+        // Parse server port for the anti-RST iptables rule (Bug #1: was parsing network ipv4 :0)
+        lastRawPort = parseServerPortFromYaml(configYaml)
         val fwPort = lastRawPort
         if (fwPort != null) fwExecutor.execute { installAntiRstRuleBlocking(fwPort) }
         val configFile = File(paqetDir, "config_run.yaml")

@@ -9,8 +9,19 @@ private fun List<String>.toTcpFlagYaml(): String =
     if (isEmpty()) "[ \"$DEFAULT_TCP_FLAGS\" ]"
     else joinToString(", ") { "\"${it.trim()}\"" }.let { "[ $it ]" }
 
-/** True when server is IPv6 (brackets). Host part contains ':'. */
-private fun isIpv6Server(serverAddr: String): Boolean = serverAddr.trim().startsWith("[")
+/** True when server is IPv6: [ipv6]:port, bare :: or >=2 colons. */
+private fun isIpv6Server(serverAddr: String): Boolean {
+    val s = serverAddr.trim()
+    if (s.startsWith("[")) return true
+    if (s.contains("::")) return true
+    val c = s.count { it == ':' }
+    if (c >= 2) {
+        val last = s.lastIndexOf(':')
+        if (last > 0 && s.substring(0, last).contains(':')) return true
+        if (!s.contains('.')) return true
+    }
+    return false
+}
 
 fun PaqetConfig.toPaqetYaml(logLevel: String = "debug"): String {
     val localList = localFlag?.takeIf { it.isNotEmpty() } ?: listOf(DEFAULT_TCP_FLAGS)
@@ -45,7 +56,8 @@ fun PaqetConfig.toPaqetYaml(logLevel: String = "debug"): String {
             else -> ""
         }
         // If still empty (e.g. old cached config), keep placeholder so error is explicit; caller should refresh.
-        val addrVal = if (ipv6Source.isNotEmpty()) ipv6Source else "[::]:0"
+        if (ipv6Source.isEmpty()) throw IllegalStateException("IPv6 server '" + serverAddr + "' but no IPv6 address — refresh network info")
+        val addrVal = ipv6Source
         """  interface: "$networkInterface"
   ipv6:
     addr: "$addrVal"

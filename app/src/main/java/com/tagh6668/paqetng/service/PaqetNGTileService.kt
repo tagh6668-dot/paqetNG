@@ -104,6 +104,9 @@ class PaqetNGTileService : TileService() {
 
     private fun startVpnFromTile() {
         Thread {
+            if (tileBusy) return@Thread
+            tileBusy = true
+            try {
             val app = applicationContext as? PaqetNGApplication ?: return@Thread
             val configRepo = ConfigRepository(applicationContext)
             val settingsRepo = SettingsRepository(applicationContext)
@@ -173,10 +176,12 @@ class PaqetNGTileService : TileService() {
                     applicationContext.startService(intent)
                 }
             }, 800)
+            } finally { tileBusy = false }
         }.start()
     }
 
     private fun stopVpnFromTile() {
+        if (tileBusy) return
         val app = applicationContext as? PaqetNGApplication ?: return
         app.paqetRunner.stop()
         applicationContext.startService(
@@ -192,5 +197,6 @@ class PaqetNGTileService : TileService() {
 
     companion object {
         private const val TAG = "PaqetNGTileService"
+        @Volatile private var tileBusy = false
     }
 }
