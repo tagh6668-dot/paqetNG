@@ -95,7 +95,7 @@ class PaqetRunner(
 
     /** Parse server port from generated YAML: server:\n  addr: "host:port" . Supports [ipv6]:port and bare ipv6. */
     private fun parseServerPortFromYaml(yaml: String): Int? {
-        val m = Regex("""(?m)^server:\\s*\\n\\s*addr:\\s*"([^"]+)""""").find(yaml) ?: return null
+        val m = Regex("""(?m)^server:\s*\n\s*addr:\s*"([^"]+)""""").find(yaml) ?: return null
         val addr = m.groupValues[1].trim()
         if (addr.isEmpty()) return null
         return try {

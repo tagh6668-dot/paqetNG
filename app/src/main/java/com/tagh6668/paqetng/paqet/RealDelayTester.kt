@@ -337,7 +337,7 @@ class RealDelayTester(
     }
 
     private fun parseServerPortFromYaml(yaml: String): Int? {
-        val m = Regex("""(?m)^server:\\s*\\n\\s*addr:\\s*"([^"]+)""""").find(yaml) ?: return null
+        val m = Regex("""(?m)^server:\s*\n\s*addr:\s*"([^"]+)""""").find(yaml) ?: return null
         val addr = m.groupValues[1].trim()
         if (addr.isEmpty()) return null
         return try {

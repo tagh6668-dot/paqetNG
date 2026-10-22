@@ -1,5 +1,12 @@
 # Changelog
 
+## [v1.3.11]
+
+### Fix
+- **Critical: anti-RST regex NEVER matched — ثابت شد** (`PaqetRunner.parseServerPortFromYaml` + `RealDelayTester.parseServerPortFromYaml`): الگوی داخل رشته خام Kotlin به‌صورت `\\s*\\n\\s*` (دو بک‌اسلش) نوشته شده بود. در raw string (`"""..."""`) بک‌اسلش‌ها escape نمی‌شوند، پس الگوی واقعی در regex به‌صورت «بک‌اسلش لفظی + s» تفسیر می‌شد و هرگز با YAML تولیدی (که `server:\n  addr: "..."` معمولی دارد) تطبیق نمی‌کرد. نتیجه: `parseServerPortFromYaml` همیشه `null` برمی‌گرداند، قانون `iptables -I OUTPUT -p tcp --dport <port> --tcp-flags RST RST -j DROP` هرگز نصب نمی‌شد و هسته‌ی لینوکس پکت‌های RST خودش را روی اتصالات raw-TCP می‌فرستاد — IPv4 عملاً قطع می‌شد (همان پیام «anti-rst SKIP: could not parse server port from YAML»).
+- **IPv6 vs IPv4**: تا حالا اتصال IPv6 کار می‌کرد چون هسته برای مسیر IPv6 پاسخ RST مشابهی نداد/کمتر فرستاد، ولی IPv4 بدون قانون DROP محکوم به مرگ بود. با اصلاح regex حالا هر دو خانواده (iptables + ip6tables) همزمان محافظت می‌شوند.
+- **پایدار پس از ریبوت**: قانون anti-RST هر بار که paqet استارت می‌شود دوباره نصب می‌شود (و در stop حذف می‌شود)، پس نیازی به ذخیره‌سازی iptables ندارد؛ پس از ریبوت/ری‌استارت اپ خودش دوباره فعال می‌شود.
+
 ## [v1.3.10]
 
 ### Fix
