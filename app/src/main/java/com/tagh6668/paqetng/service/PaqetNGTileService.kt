@@ -138,7 +138,7 @@ class PaqetNGTileService : TileService() {
             }
             val summary = "server=${configWithNetwork.serverAddr} socks=${configWithNetwork.socksListen}"
             if (connectionMode == "socks") {
-                val started = app.paqetRunner.startWithYaml(configWithNetwork.toPaqetYaml(logLevel = logLevel), summary)
+                val started = app.paqetRunner.startWithYaml(configWithNetwork.toPaqetYaml(logLevel = logLevel), summary, configWithNetwork.serverPort())
                 if (started) {
                     val svc = Intent(applicationContext, SocksNotificationService::class.java)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -158,7 +158,7 @@ class PaqetNGTileService : TileService() {
                 mainHandler.post { Toast.makeText(applicationContext, R.string.app_tile_vpn_permission, Toast.LENGTH_LONG).show() }
                 return@Thread
             }
-            val started = app.paqetRunner.startWithYaml(configWithNetwork.toPaqetYaml(logLevel = logLevel), summary)
+            val started = app.paqetRunner.startWithYaml(configWithNetwork.toPaqetYaml(logLevel = logLevel), summary, configWithNetwork.serverPort())
             if (!started) {
                 mainHandler.post { Toast.makeText(applicationContext, R.string.app_tile_start_failed, Toast.LENGTH_SHORT).show() }
                 return@Thread

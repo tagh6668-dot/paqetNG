@@ -77,6 +77,19 @@ data class PaqetConfig(
     /** Port number from socksListen (e.g. 1284 from "127.0.0.1:1284"). */
     fun socksPort(): Int = socksListen.substringAfterLast(':', "1284").toIntOrNull() ?: 1284
 
+    /** Extracts server port from serverAddr (supports "[ipv6]:port", "ipv4:port", "host:port"). */
+    fun serverPort(): Int? {
+        val s = serverAddr.trim()
+        if (s.isEmpty()) return null
+        return when {
+            s.startsWith("[") -> {
+                val close = s.lastIndexOf(']')
+                if (close < 0) null else s.substring(close + 1).trim().removePrefix(":").toIntOrNull()?.takeIf { it in 1..65535 }
+            }
+            else -> s.substringAfterLast(':', "").toIntOrNull()?.takeIf { it in 1..65535 }
+        }
+    }
+
     /**
      * Normalizes config to ensure all fields have proper defaults.
      * This is needed when loading old configs from JSON that don't have the new fields.

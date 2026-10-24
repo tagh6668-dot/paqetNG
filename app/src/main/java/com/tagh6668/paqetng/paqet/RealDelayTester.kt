@@ -313,8 +313,11 @@ class RealDelayTester(
             c == 1
         }
         if (shouldInstall) {
-            runSu("iptables -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || iptables -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP")
-            runSu("ip6tables -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || ip6tables -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP")
+            val cmd = "iptables -w 5 -t filter -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || iptables -w 5 -t filter -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP ; " +
+                      "iptables -w 5 -t mangle -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || iptables -w 5 -t mangle -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP ; " +
+                      "ip6tables -w 5 -t filter -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || ip6tables -w 5 -t filter -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP ; " +
+                      "ip6tables -w 5 -t mangle -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || ip6tables -w 5 -t mangle -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP"
+            runSu(cmd)
         }
     }
     private fun removeAntiRst(port: Int) {
@@ -323,21 +326,44 @@ class RealDelayTester(
             if (c <= 0) { antiRstRefCount.remove(port); true } else { antiRstRefCount[port] = c; false }
         }
         if (shouldRemove) {
-            runSu("iptables -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null; true")
-            runSu("ip6tables -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null; true")
+            val app = context.applicationContext as? com.tagh6668.paqetng.PaqetNGApplication
+            if (app?.paqetRunner?.activeAntiRstPort == port) {
+                return
+            }
+            val cmd = "iptables -w 5 -t filter -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || true ; " +
+                      "iptables -w 5 -t mangle -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || true ; " +
+                      "ip6tables -w 5 -t filter -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || true ; " +
+                      "ip6tables -w 5 -t mangle -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || true"
+            runSu(cmd)
         }
     }
     private fun runSu(cmd: String) {
         try {
             val p = ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
-            p.inputStream.bufferedReader().readText()
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) p.waitFor(4, TimeUnit.SECONDS) else { val t = Thread { p.waitFor() }; t.start(); t.join(4000) }
-            p.destroy()
+            val out = java.io.ByteArrayOutputStream()
+            val t = Thread { try { p.inputStream.copyTo(out) } catch (_: Exception) {} }
+            t.start()
+            val exited = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                p.waitFor(5, TimeUnit.SECONDS)
+            } else {
+                val waiter = Thread { p.waitFor() }
+                waiter.start()
+                waiter.join(5000)
+                !waiter.isAlive
+            }
+            if (!exited) {
+                try { p.destroyForcibly() } catch (_: Exception) { p.destroy() }
+                t.interrupt()
+            } else {
+                p.destroy()
+            }
         } catch (_: Exception) {}
     }
 
     private fun parseServerPortFromYaml(yaml: String): Int? {
-        val m = Regex("""(?m)^server:\s*\n\s*addr:\s*"([^"]+)""""").find(yaml) ?: return null
+        val m = Regex("""(?m)^\s*server:\s*(?:\r?\n)\s*addr:\s*["']?([^"'\r\n]+)["']?""").find(yaml)
+            ?: Regex("""(?m)^\s*addr:\s*["']?([^"'\r\n]+)["']?""").find(yaml)
+            ?: return null
         val addr = m.groupValues[1].trim()
         if (addr.isEmpty()) return null
         return try {
