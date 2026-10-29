@@ -28,7 +28,7 @@ import java.util.concurrent.TimeUnit
 /**
  * Parallel "real delay" tester that runs paqet binaries in isolated temp dirs.
  * Does NOT touch the main PaqetRunner, so the active VPN/SOCKS session is never interrupted.
- * Concurrency = 10. Each tester gets its own SOCKS port and temp dir/binary copy.
+ * Concurrency = 3 to prevent mobile network radio contention and root daemon throttling.
  */
 class RealDelayTester(
     private val context: Context,
@@ -36,7 +36,7 @@ class RealDelayTester(
 ) {
     companion object {
         private const val TAG = "RealDelayTester"
-        const val CONCURRENCY = 10
+        const val CONCURRENCY = 3
         const val TEST_PORT_START = 28000
     }
 
@@ -57,7 +57,7 @@ class RealDelayTester(
         val port: Int,
         val dir: File,
         val process: Process?,
-        val antiRstPort: Int?
+        val cfgFile: File
     )
 
     fun cancel() {
@@ -97,30 +97,39 @@ class RealDelayTester(
 
         val checkUrl = normalizeCheckUrl(checkUrlRaw)
         val timeout = timeoutMs.coerceIn(3000, 60000)
-        Log.d(TAG, "testAll count=${configs.size} url=$checkUrl timeout=${timeout}ms concurrency=$CONCURRENCY allowLan=$allowLan")
 
-        val netInfo = try { networkInfoProvider?.getDefaultNetworkInfo() } catch (_: Exception) { null }
-        val ports = allocatePorts(configs.size)
+        // Pre-collect all target server ports and install anti-RST in a single batch BEFORE testing starts!
+        // This avoids per-test root iptables calls and prevents rule deletion race conditions between tests.
+        val portsToProtect = configs.mapNotNull { it.serverPort() }.toSet()
+        Log.d(TAG, "testAll count=${configs.size} url=$checkUrl timeout=${timeout}ms concurrency=$CONCURRENCY allowLan=$allowLan portsToProtect=$portsToProtect")
+        installBatchAntiRst(portsToProtect)
 
-        val semaphore = Semaphore(CONCURRENCY)
-        coroutineScope {
-            val jobs = configs.mapIndexed { idx, cfg ->
-                async(Dispatchers.IO) {
-                    semaphore.withPermit {
-                        if (cancelled) return@withPermit
-                        _testingIds.update { it + cfg.id }
-                        val port = ports[idx]
-                        val ms = runOne(cfg, port, netInfo, checkUrl, timeout, logLevel, allowLan)
-                        if (!cancelled) _results.update { it + (cfg.id to ms) }
-                        _testingIds.update { it - cfg.id }
-                        Log.d(TAG, "${cfg.serverAddr}:$port -> ${ms}ms")
+        try {
+            val netInfo = try { networkInfoProvider?.getDefaultNetworkInfo() } catch (_: Exception) { null }
+            val ports = allocatePorts(configs.size)
+
+            val semaphore = Semaphore(CONCURRENCY)
+            coroutineScope {
+                val jobs = configs.mapIndexed { idx, cfg ->
+                    async(Dispatchers.IO) {
+                        semaphore.withPermit {
+                            if (cancelled) return@withPermit
+                            _testingIds.update { it + cfg.id }
+                            val port = ports[idx]
+                            val ms = runOne(cfg, port, netInfo, checkUrl, timeout, logLevel, allowLan)
+                            if (!cancelled) _results.update { it + (cfg.id to ms) }
+                            _testingIds.update { it - cfg.id }
+                            Log.d(TAG, "${cfg.serverAddr}:$port -> ${ms}ms")
+                        }
                     }
                 }
+                jobs.awaitAll()
             }
-            jobs.awaitAll()
+        } finally {
+            removeBatchAntiRst(portsToProtect)
+            _isTesting.value = false
+            Log.d(TAG, "done results=${_results.value}")
         }
-        _isTesting.value = false
-        Log.d(TAG, "done results=${_results.value}")
     }
 
     private fun normalizeCheckUrl(raw: String): String {
@@ -134,7 +143,7 @@ class RealDelayTester(
         val out = mutableListOf<Int>()
         var candidate = TEST_PORT_START
         while (out.size < n && candidate < TEST_PORT_START + 3000) {
-            if (isPortFree(candidate)) out.add(candidate)
+            if (isPortFree(candidate) && !out.contains(candidate)) out.add(candidate)
             candidate++
             if (candidate == 1284) candidate = 1285
             // avoid reusing same port within this batch
@@ -144,7 +153,7 @@ class RealDelayTester(
             // fallback: find random free
             var p = TEST_PORT_START + (out.size * 7 % 2000)
             var tries = 0
-            while (!isPortFree(p) && tries < 50) { p++; tries++ }
+            while ((!isPortFree(p) || out.contains(p)) && tries < 50) { p++; tries++ }
             out.add(p)
         }
         return out
@@ -179,12 +188,15 @@ class RealDelayTester(
             handle = startIsolatedPaqet(withNet, yaml, port) ?: return -1
             synchronized(activeHandles) { activeHandles.add(handle) }
             if (cancelled) return -1
-            if (!waitPortReady(port, 4000)) {
-                Log.w(TAG, "SOCKS not ready ${config.serverAddr}:$port")
+            
+            // Allow ample startup time (up to 8s or timeoutMs) so slower root process initialization doesn't falsely fail
+            val portWaitMs = maxOf(6000L, minOf(timeoutMs.toLong(), 8000L))
+            if (!waitPortReady(port, portWaitMs)) {
+                Log.w(TAG, "SOCKS not ready ${config.serverAddr}:$port after ${portWaitMs}ms")
                 return -1
             }
             if (cancelled) return -1
-            try { Thread.sleep(180) } catch (_: Exception) {}
+            try { Thread.sleep(150) } catch (_: Exception) {}
             probeViaSocks(port, checkUrl, timeoutMs)
         } catch (e: Exception) {
             Log.w(TAG, "runOne ${config.serverAddr}:$port", e)
@@ -198,25 +210,39 @@ class RealDelayTester(
     }
 
     private fun probeViaSocks(port: Int, checkUrl: String, timeoutMs: Int): Int {
+        val connectTimeout = timeoutMs.coerceIn(3000, 30000)
+        val readTimeout = timeoutMs.coerceIn(3000, 30000)
+        val ms = executeProbe(port, checkUrl, connectTimeout, readTimeout)
+        if (ms >= 0) return ms
+        if (cancelled) return -1
+        try { Thread.sleep(200) } catch (_: Exception) {}
+        return executeProbe(port, checkUrl, connectTimeout, readTimeout)
+    }
+
+    private fun executeProbe(port: Int, checkUrl: String, connectTimeout: Int, readTimeout: Int): Int {
         return try {
             val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port))
             val url = URL(checkUrl)
             val conn = url.openConnection(proxy) as HttpURLConnection
             try {
                 conn.requestMethod = "GET"
-                conn.connectTimeout = timeoutMs
-                conn.readTimeout = timeoutMs
+                conn.connectTimeout = connectTimeout
+                conn.readTimeout = readTimeout
                 conn.instanceFollowRedirects = true
+                conn.useCaches = false
+                conn.setRequestProperty("Connection", "close")
+                conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Android; Mobile)")
                 val start = System.currentTimeMillis()
                 conn.connect()
                 val code = conn.responseCode
-                Log.d(TAG, "probe :$port code=$code")
-                (System.currentTimeMillis() - start).toInt()
+                val elapsed = (System.currentTimeMillis() - start).toInt()
+                Log.d(TAG, "probe :$port code=$code elapsed=${elapsed}ms")
+                if (code in 100..599) elapsed else -1
             } finally {
                 conn.disconnect()
             }
         } catch (e: Exception) {
-            Log.w(TAG, "probe failed :$port", e)
+            Log.w(TAG, "probe failed :$port: ${e.message}")
             -1
         }
     }
@@ -226,38 +252,37 @@ class RealDelayTester(
         while (System.currentTimeMillis() - start < maxMs) {
             if (cancelled) return false
             try {
-                Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 400); return true }
+                Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 250); return true }
             } catch (_: Exception) {}
-            try { Thread.sleep(140) } catch (_: Exception) {}
+            try { Thread.sleep(100) } catch (_: Exception) {}
         }
         return false
     }
 
-    private fun ensureBinaryCopy(dstDir: File): File? {
-        val srcBin = File(File(context.filesDir, "paqet"), "paqet")
-        return try {
-            val dst = File(dstDir, "paqet")
-            if (srcBin.exists() && srcBin.canExecute()) {
-                dst.parentFile?.mkdirs()
-                srcBin.copyTo(dst, overwrite = true)
-                dst.setExecutable(true)
-                dst
-            } else {
-                val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: ""
-                val candidates = listOf("$abi/paqet", "paqet")
-                var ok = false
-                for (asset in candidates) {
-                    try {
-                        context.assets.open(asset).use { input ->
-                            dst.parentFile?.mkdirs()
-                            dst.outputStream().use { out -> input.copyTo(out) }
-                        }
-                        dst.setExecutable(true); ok = true; break
-                    } catch (_: Exception) {}
+    /**
+     * Resolves the existing paqet executable directly, avoiding copying 16MB per test.
+     */
+    private fun getSharedBinary(): File? {
+        val app = context.applicationContext as? com.tagh6668.paqetng.PaqetNGApplication
+        app?.paqetRunner?.ensureBinary()
+        val bin = File(File(context.filesDir, "paqet"), "paqet")
+        if (bin.exists() && bin.canExecute()) return bin
+
+        val paqetDir = File(context.filesDir, "paqet").also { if (!it.exists()) it.mkdirs() }
+        val target = File(paqetDir, "paqet")
+        val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: ""
+        val candidates = listOf("$abi/paqet", "paqet")
+        for (asset in candidates) {
+            try {
+                context.assets.open(asset).use { input ->
+                    target.parentFile?.mkdirs()
+                    target.outputStream().use { out -> input.copyTo(out) }
                 }
-                if (ok) dst else null
-            }
-        } catch (_: Exception) { null }
+                target.setExecutable(true, false)
+                return target
+            } catch (_: Exception) {}
+        }
+        return if (target.exists() && target.canExecute()) target else null
     }
 
     private fun startIsolatedPaqet(config: PaqetConfig, yaml: String, port: Int): TesterHandle? {
@@ -265,9 +290,7 @@ class RealDelayTester(
         dir.mkdirs()
         val cfgFile = File(dir, "config.yaml")
         try { cfgFile.writeText(yaml) } catch (_: Exception) { return null }
-        val bin = ensureBinaryCopy(dir) ?: run { try { dir.deleteRecursively() } catch (_: Exception) {}; return null }
-        val rawPort = parseServerPortFromYaml(yaml)
-        if (rawPort != null) installAntiRst(rawPort)
+        val bin = getSharedBinary() ?: run { try { dir.deleteRecursively() } catch (_: Exception) {}; return null }
         val proc = try {
             ProcessBuilder("su", "-c", "${bin.absolutePath} run -c ${cfgFile.absolutePath}")
                 .directory(dir)
@@ -275,80 +298,71 @@ class RealDelayTester(
                 .start()
         } catch (e: Exception) {
             Log.w(TAG, "start failed :$port", e)
-            if (rawPort != null) removeAntiRst(rawPort)
             try { dir.deleteRecursively() } catch (_: Exception) {}
             return null
         }
         Thread { try { proc.inputStream.bufferedReader().forEachLine { } } catch (_: Exception) {} }.apply { isDaemon = true; start() }
-        return TesterHandle(config.id, port, dir, proc, rawPort)
+        return TesterHandle(config.id, port, dir, proc, cfgFile)
     }
 
     private fun killHandle(h: TesterHandle) {
         try { h.process?.destroy() } catch (_: Exception) {}
         try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) h.process?.waitFor(800, TimeUnit.MILLISECONDS)
-            else { val t = Thread { h.process?.waitFor() }; t.start(); t.join(800) }
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) h.process?.waitFor(500, TimeUnit.MILLISECONDS)
+            else { val t = Thread { h.process?.waitFor() }; t.start(); t.join(500) }
         } catch (_: Exception) {}
         try { if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) h.process?.destroyForcibly() } catch (_: Exception) {}
         try {
-            val binPath = File(h.dir, "paqet").absolutePath.replace("'", "'\\''")
-            ProcessBuilder("su", "-c", "pkill -9 -f '$binPath' || true").redirectErrorStream(true).start().let { p ->
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) p.waitFor(700, TimeUnit.MILLISECONDS) else { val t = Thread { p.waitFor() }; t.start(); t.join(700) }
+            val cfgPath = h.cfgFile.absolutePath.replace("'", "'\\''")
+            ProcessBuilder("su", "-c", "pkill -9 -f '$cfgPath' || true").redirectErrorStream(true).start().let { p ->
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) p.waitFor(500, TimeUnit.MILLISECONDS) else { val t = Thread { p.waitFor() }; t.start(); t.join(500) }
                 p.destroy()
             }
         } catch (_: Exception) {}
-        if (h.antiRstPort != null) removeAntiRst(h.antiRstPort)
         try { h.dir.deleteRecursively() } catch (_: Exception) {}
-        try { Thread.sleep(60) } catch (_: Exception) {}
     }
 
-    // Ref-counted anti-RST so parallel testers sharing same server port don't delete each other's rule (Bug #8)
-    private val antiRstRefCount = mutableMapOf<Int, Int>()
-    private val antiRstLock = Any()
+    private fun installBatchAntiRst(ports: Set<Int>) {
+        if (ports.isEmpty()) return
+        val sb = StringBuilder()
+        for (port in ports) {
+            sb.append("iptables -w 5 -t filter -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || iptables -w 5 -t filter -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP ; ")
+            sb.append("iptables -w 5 -t mangle -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || iptables -w 5 -t mangle -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP ; ")
+            sb.append("ip6tables -w 5 -t filter -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || ip6tables -w 5 -t filter -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP ; ")
+            sb.append("ip6tables -w 5 -t mangle -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || ip6tables -w 5 -t mangle -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP ; ")
+        }
+        runSu(sb.toString())
+    }
 
-    private fun installAntiRst(port: Int) {
-        val shouldInstall = synchronized(antiRstLock) {
-            val c = (antiRstRefCount[port] ?: 0) + 1
-            antiRstRefCount[port] = c
-            c == 1
+    private fun removeBatchAntiRst(ports: Set<Int>) {
+        if (ports.isEmpty()) return
+        val app = context.applicationContext as? com.tagh6668.paqetng.PaqetNGApplication
+        val activeVpnPort = app?.paqetRunner?.activeAntiRstPort
+        val toRemove = if (activeVpnPort != null) ports - activeVpnPort else ports
+        if (toRemove.isEmpty()) return
+        val sb = StringBuilder()
+        for (port in toRemove) {
+            sb.append("iptables -w 5 -t filter -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || true ; ")
+            sb.append("iptables -w 5 -t mangle -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || true ; ")
+            sb.append("ip6tables -w 5 -t filter -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || true ; ")
+            sb.append("ip6tables -w 5 -t mangle -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || true ; ")
         }
-        if (shouldInstall) {
-            val cmd = "iptables -w 5 -t filter -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || iptables -w 5 -t filter -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP ; " +
-                      "iptables -w 5 -t mangle -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || iptables -w 5 -t mangle -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP ; " +
-                      "ip6tables -w 5 -t filter -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || ip6tables -w 5 -t filter -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP ; " +
-                      "ip6tables -w 5 -t mangle -C OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || ip6tables -w 5 -t mangle -I OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP"
-            runSu(cmd)
-        }
+        runSu(sb.toString())
     }
-    private fun removeAntiRst(port: Int) {
-        val shouldRemove = synchronized(antiRstLock) {
-            val c = (antiRstRefCount[port] ?: 1) - 1
-            if (c <= 0) { antiRstRefCount.remove(port); true } else { antiRstRefCount[port] = c; false }
-        }
-        if (shouldRemove) {
-            val app = context.applicationContext as? com.tagh6668.paqetng.PaqetNGApplication
-            if (app?.paqetRunner?.activeAntiRstPort == port) {
-                return
-            }
-            val cmd = "iptables -w 5 -t filter -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || true ; " +
-                      "iptables -w 5 -t mangle -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || true ; " +
-                      "ip6tables -w 5 -t filter -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || true ; " +
-                      "ip6tables -w 5 -t mangle -D OUTPUT -p tcp --dport $port --tcp-flags RST RST -j DROP 2>/dev/null || true"
-            runSu(cmd)
-        }
-    }
+
     private fun runSu(cmd: String) {
+        if (cmd.isBlank()) return
         try {
             val p = ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
             val out = java.io.ByteArrayOutputStream()
             val t = Thread { try { p.inputStream.copyTo(out) } catch (_: Exception) {} }
             t.start()
             val exited = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                p.waitFor(5, TimeUnit.SECONDS)
+                p.waitFor(10, TimeUnit.SECONDS)
             } else {
                 val waiter = Thread { p.waitFor() }
                 waiter.start()
-                waiter.join(5000)
+                waiter.join(10000)
                 !waiter.isAlive
             }
             if (!exited) {
@@ -360,24 +374,7 @@ class RealDelayTester(
         } catch (_: Exception) {}
     }
 
-    private fun parseServerPortFromYaml(yaml: String): Int? {
-        val m = Regex("""(?m)^\s*server:\s*(?:\r?\n)\s*addr:\s*["']?([^"'\r\n]+)["']?""").find(yaml)
-            ?: Regex("""(?m)^\s*addr:\s*["']?([^"'\r\n]+)["']?""").find(yaml)
-            ?: return null
-        val addr = m.groupValues[1].trim()
-        if (addr.isEmpty()) return null
-        return try {
-            when {
-                addr.startsWith("[") -> {
-                    val close = addr.lastIndexOf(']')
-                    if (close < 0) null else addr.substring(close + 1).trim().removePrefix(":").toIntOrNull()?.takeIf { it in 1..65535 }
-                }
-                else -> addr.substringAfterLast(':', "").toIntOrNull()?.takeIf { it in 1..65535 }
-            }
-        } catch (_: Exception) { null }
-    }
-
-    /** Delete orphaned paqet_test_* dirs left from previous crash (Bug #8 disk). Call on app start if needed. */
+    /** Delete orphaned paqet_test_* dirs left from previous crash. Call on app start or cancel. */
     fun cleanupOrphanedDirs() {
         try {
             context.filesDir.listFiles()?.filter { it.isDirectory && it.name.startsWith("paqet_test_") }?.forEach {
