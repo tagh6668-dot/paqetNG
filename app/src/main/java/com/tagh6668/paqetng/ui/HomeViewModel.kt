@@ -299,7 +299,7 @@ class HomeViewModel(
         }
     }
 
-    /** Test real delays for ALL configs in parallel (via RealDelayTester.CONCURRENCY) via isolated paqet instances. Does not touch main VPN. Timeout from Settings. */
+    /** Test real delays for ALL configs in parallel (10 at a time) via isolated paqet instances. Does not touch main VPN. Timeout from Settings. */
     fun testRealDelays() {
         if (batchTesting.value) return
         batchJob?.cancel()

@@ -33,22 +33,10 @@ class DefaultNetworkInfoProvider(private val context: Context) {
     suspend fun getDefaultNetworkInfo(): DefaultNetworkInfo? = withContext(Dispatchers.IO) {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             ?: return@withContext null
-        // Prefer physical network (WiFi, Cellular, Ethernet) to bypass virtual interfaces (VPN/tun)
-        val physicalNetwork = cm.allNetworks.firstOrNull { net ->
-            val caps = cm.getNetworkCapabilities(net) ?: return@firstOrNull false
-            !caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) &&
-                (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
-                 caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) ||
-                 caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET))
-        } ?: cm.activeNetwork ?: return@withContext null
-
-        // Prefer LinkProperties (works well for WiFi); on cellular or virtual it delegates to root.
-        cm.getLinkProperties(physicalNetwork)?.let { lp ->
+        val network = cm.activeNetwork ?: return@withContext null
+        // Prefer LinkProperties (works well for WiFi); on cellular it often returns null.
+        cm.getLinkProperties(network)?.let { lp ->
             val interfaceName = lp.interfaceName?.takeIf { it.isNotBlank() } ?: "wlan0"
-            if (interfaceName.startsWith("tun") || interfaceName.startsWith("dummy") || interfaceName == "lo") {
-                Log.d(TAG, "getDefaultNetworkInfo: detected virtual interface ($interfaceName), delegating to root")
-                return@withContext getDefaultNetworkInfoViaRoot()
-            }
             val ipv4 = lp.linkAddresses
                 .mapNotNull { la -> la.address }
                 .filterIsInstance<Inet4Address>()
@@ -216,8 +204,8 @@ class DefaultNetworkInfoProvider(private val context: Context) {
         }
         val sorted = candidates.sortedWith(compareBy(
             { when {
-                it.first.startsWith("wlan") || it.first.startsWith("wifi") || it.first.startsWith("ap") -> 0
-                it.first.startsWith("ccmni") || it.first.startsWith("rmnet") -> 1
+                it.first.startsWith("ccmni") || it.first.startsWith("rmnet") -> 0
+                it.first.startsWith("wlan") -> 1
                 else -> 2
             }},
             { it.first }
@@ -231,7 +219,7 @@ class DefaultNetworkInfoProvider(private val context: Context) {
                 Log.d(TAG, "probePhysicalInterface: candidate $iface $ip not reachable: ${out?.take(200)}")
             }
         }
-        return sorted.firstOrNull()
+        return null
     }
 
     private fun isWifiInterface(iface: String): Boolean { val n = iface.lowercase(); return n.startsWith("wlan") || n.startsWith("wifi") || n.startsWith("ap") }
