@@ -26,6 +26,8 @@ private val CONNECTION_MODE_KEY = stringPreferencesKey("connection_mode")
 private val SPLIT_MODE_KEY = stringPreferencesKey("split_mode")
 private val SPLIT_APPS_KEY = stringPreferencesKey("split_apps")
 private val SPLIT_SHOW_SYSTEM_KEY = booleanPreferencesKey("split_show_system")
+private val FAKE_DNS_KEY = booleanPreferencesKey("fake_dns")
+private val REMOTE_DNS_KEY = stringPreferencesKey("remote_dns")
 
 enum class ThemePref(val value: String) {
     LIGHT("light"),
@@ -92,6 +94,14 @@ class SettingsRepository(private val context: Context) {
         prefs[SPLIT_SHOW_SYSTEM_KEY] ?: DEFAULT_SPLIT_SHOW_SYSTEM
     }
 
+    val fakeDns: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
+        prefs[FAKE_DNS_KEY] ?: DEFAULT_FAKE_DNS
+    }
+
+    val remoteDns: Flow<String> = context.settingsDataStore.data.map { prefs ->
+        prefs[REMOTE_DNS_KEY] ?: DEFAULT_REMOTE_DNS
+    }
+
     suspend fun setTheme(theme: ThemePref) {
         context.settingsDataStore.edit { it[THEME_KEY] = theme.value }
     }
@@ -153,6 +163,15 @@ class SettingsRepository(private val context: Context) {
         context.settingsDataStore.edit { it[SPLIT_SHOW_SYSTEM_KEY] = show }
     }
 
+    suspend fun setFakeDns(enabled: Boolean) {
+        context.settingsDataStore.edit { it[FAKE_DNS_KEY] = enabled }
+    }
+
+    suspend fun setRemoteDns(dns: String) {
+        val trimmed = dns.trim().ifEmpty { DEFAULT_REMOTE_DNS }
+        context.settingsDataStore.edit { it[REMOTE_DNS_KEY] = trimmed }
+    }
+
     companion object {
         const val DEFAULT_SOCKS_PORT = 1284
         const val DEFAULT_CONNECTION_CHECK_URL = "https://www.gstatic.com/generate_204"
@@ -164,9 +183,12 @@ class SettingsRepository(private val context: Context) {
         const val DEFAULT_SOCKS_LISTEN_LAN = false
         const val DEFAULT_LOG_LEVEL = "warn"
         const val DEFAULT_CONNECTION_MODE = "vpn"
+        const val DEFAULT_FAKE_DNS = true
+        const val DEFAULT_REMOTE_DNS = "1.1.1.1"
 
         val LOG_LEVELS = listOf("none", "debug", "info", "warn", "error", "fatal")
         val CONNECTION_MODES = listOf("vpn", "socks")
+        val REMOTE_DNS_PRESETS = listOf("1.1.1.1", "8.8.8.8", "9.9.9.9")
         const val DEFAULT_SPLIT_MODE = "disabled"
         const val DEFAULT_SPLIT_SHOW_SYSTEM = false
         val SPLIT_MODES = listOf("disabled", "bypass", "only")

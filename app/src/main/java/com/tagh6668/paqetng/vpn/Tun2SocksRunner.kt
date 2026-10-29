@@ -7,10 +7,12 @@ import java.io.File
 /**
  * Runs tun2socks (hev-socks5-tunnel) to forward TUN traffic to the local SOCKS5 port.
  * Requires libhev-socks5-tunnel.so in jniLibs (e.g. from v2rayNG compile-hevtun.sh).
+ * Supports Mapped DNS (Fake DNS) for zero-latency local resolution and remote DNS over SOCKS5.
  */
 class Tun2SocksRunner(
     private val context: Context,
-    private val socksPort: Int
+    private val socksPort: Int,
+    private val fakeDns: Boolean = true
 ) {
     private var hevService: com.v2ray.ang.service.TProxyService? = null
 
@@ -58,6 +60,14 @@ class Tun2SocksRunner(
             appendLine("  port: $socksPort")
             appendLine("  address: 127.0.0.1")
             appendLine("  udp: 'udp'")
+            if (fakeDns) {
+                appendLine("mapdns:")
+                appendLine("  address: $FAKE_DNS_IP")
+                appendLine("  port: 53")
+                appendLine("  network: 240.0.0.0")
+                appendLine("  netmask: 240.0.0.0")
+                appendLine("  cache-size: 10000")
+            }
             appendLine("misc:")
             appendLine("  tcp-read-write-timeout: $tcpTimeout")
             appendLine("  udp-read-write-timeout: $udpTimeout")
@@ -67,5 +77,6 @@ class Tun2SocksRunner(
 
     companion object {
         private const val TAG = "Tun2Socks"
+        const val FAKE_DNS_IP = "10.0.0.3"
     }
 }

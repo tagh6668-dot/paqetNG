@@ -74,6 +74,9 @@ fun SettingsScreen(
     val connectionMode by settingsRepository.connectionMode.collectAsState(initial = SettingsRepository.DEFAULT_CONNECTION_MODE)
     val splitMode by settingsRepository.splitMode.collectAsState(initial = SettingsRepository.DEFAULT_SPLIT_MODE)
     val splitApps by settingsRepository.splitApps.collectAsState(initial = emptySet())
+    val fakeDns by settingsRepository.fakeDns.collectAsState(initial = SettingsRepository.DEFAULT_FAKE_DNS)
+    val remoteDns by settingsRepository.remoteDns.collectAsState(initial = SettingsRepository.DEFAULT_REMOTE_DNS)
+    var remoteDnsInput by remember(remoteDns) { mutableStateOf(remoteDns) }
     val scope = rememberCoroutineScope()
 
     Scaffold(
@@ -195,6 +198,44 @@ fun SettingsScreen(
                         },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true
+                )
+            }
+
+            // ——— DNS ———
+            PreferenceSection(title = stringResource(R.string.pref_category_dns)) {
+                PreferenceSwitchRow(
+                    title = stringResource(R.string.pref_fake_dns),
+                    summary = stringResource(R.string.pref_fake_dns_summary),
+                    checked = fakeDns,
+                    onCheckedChange = { scope.launch { settingsRepository.setFakeDns(it) } }
+                )
+                PreferenceRemoteDnsRow(
+                    remoteDns = remoteDns,
+                    onDnsSelected = {
+                        scope.launch { settingsRepository.setRemoteDns(it) }
+                        remoteDnsInput = it
+                    }
+                )
+                var remoteDnsFocused by remember { mutableStateOf(false) }
+                OutlinedTextField(
+                    value = remoteDnsInput,
+                    onValueChange = { remoteDnsInput = it.trim() },
+                    label = { Text(stringResource(R.string.pref_remote_dns)) },
+                    supportingText = { Text(stringResource(R.string.pref_remote_dns_summary)) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { fs ->
+                            if (remoteDnsFocused && !fs.hasFocus) {
+                                scope.launch {
+                                    val trimmed = remoteDnsInput.trim().ifEmpty { SettingsRepository.DEFAULT_REMOTE_DNS }
+                                    settingsRepository.setRemoteDns(trimmed)
+                                    remoteDnsInput = trimmed
+                                }
+                            }
+                            remoteDnsFocused = fs.hasFocus
+                        },
+                    singleLine = true,
+                    placeholder = { Text(SettingsRepository.DEFAULT_REMOTE_DNS) }
                 )
             }
 
@@ -454,4 +495,52 @@ private fun PreferenceSplitModeRow(
         }
     }
 }
+
+@Composable
+private fun PreferenceRemoteDnsRow(
+    remoteDns: String,
+    onDnsSelected: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val dnsLabel = when (remoteDns) {
+        "1.1.1.1" -> stringResource(R.string.pref_remote_dns_cloudflare)
+        "8.8.8.8" -> stringResource(R.string.pref_remote_dns_google)
+        "9.9.9.9" -> stringResource(R.string.pref_remote_dns_quad9)
+        else -> remoteDns
+    }
+
+    Box(modifier = Modifier.fillMaxWidth()) {
+        ListItem(
+            modifier = Modifier.fillMaxWidth().clickable { expanded = true },
+            headlineContent = { Text(stringResource(R.string.pref_remote_dns), style = MaterialTheme.typography.bodyLarge) },
+            supportingContent = { Text(dnsLabel, style = MaterialTheme.typography.bodySmall) },
+            colors = ListItemDefaults.colors(
+                containerColor = Color.Transparent,
+                headlineColor = MaterialTheme.colorScheme.onSurface,
+                supportingColor = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            SettingsRepository.REMOTE_DNS_PRESETS.forEach { dns ->
+                val label = when (dns) {
+                    "1.1.1.1" -> stringResource(R.string.pref_remote_dns_cloudflare)
+                    "8.8.8.8" -> stringResource(R.string.pref_remote_dns_google)
+                    "9.9.9.9" -> stringResource(R.string.pref_remote_dns_quad9)
+                    else -> dns
+                }
+                DropdownMenuItem(
+                    text = { Text(label) },
+                    onClick = {
+                        onDnsSelected(dns)
+                        expanded = false
+                    }
+                )
+            }
+        }
+    }
+}
+
 

@@ -15,6 +15,16 @@
     <!-- Settings / Preferences -->
     <string name="pref_category_general">General</string>
     <string name="pref_category_connection">Connection</string>
+    <string name="pref_category_dns">DNS</string>
+
+    <string name="pref_fake_dns">Fake DNS (Zero-latency DNS)</string>
+    <string name="pref_fake_dns_summary">Resolve domains to synthetic IPs locally to eliminate DNS poisoning and UDP packet loss</string>
+    <string name="pref_remote_dns">Remote DNS Server</string>
+    <string name="pref_remote_dns_summary">DNS server used for tunnel queries (e.g. 1.1.1.1, 8.8.8.8)</string>
+    <string name="pref_remote_dns_cloudflare">Cloudflare (1.1.1.1)</string>
+    <string name="pref_remote_dns_google">Google (8.8.8.8)</string>
+    <string name="pref_remote_dns_quad9">Quad9 (9.9.9.9)</string>
+    <string name="pref_remote_dns_custom">Custom</string>
 
     <string name="pref_theme">Theme</string>
     <string name="pref_theme_light">Light</string>

@@ -23,8 +23,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.tagh6668.paqetng.data.SettingsRepository
 
 /**
  * Android VPN that creates a tun interface and forwards traffic to the local SOCKS5 port via tun2socks.
@@ -85,6 +87,8 @@ class PaqetNGVpnService : VpnService() {
         val splitMode = intent?.getStringExtra(EXTRA_SPLIT_MODE) ?: "disabled"
         val splitAppsExtra = intent?.getStringArrayListExtra(EXTRA_SPLIT_APPS)
         val splitApps: Set<String> = splitAppsExtra?.toSet() ?: emptySet()
+        val extraFakeDns = if (intent?.hasExtra(EXTRA_FAKE_DNS) == true) intent.getBooleanExtra(EXTRA_FAKE_DNS, true) else null
+        val extraRemoteDns = intent?.getStringExtra(EXTRA_REMOTE_DNS)
         val prepare = prepare(this)
         if (prepare != null) {
             Log.e(TAG, "VPN preparation failed - user must grant VPN permission")
@@ -102,13 +106,17 @@ class PaqetNGVpnService : VpnService() {
             startForeground(NOTIFICATION_ID, buildNotification(connecting = true))
         }
         serviceScope.launch {
+            val settingsRepo = SettingsRepository(this@PaqetNGVpnService)
+            val fakeDns = extraFakeDns ?: settingsRepo.fakeDns.first()
+            val remoteDns = extraRemoteDns ?: settingsRepo.remoteDns.first()
+
             val success = withContext(Dispatchers.IO) {
                 if (vpnInterface != null) {
                     stopTun2Socks()
                     vpnInterface?.close()
                     vpnInterface = null
                 }
-                establishVpn(splitMode, splitApps)
+                establishVpn(splitMode, splitApps, fakeDns, remoteDns)
             }
             if (!success) {
                 Log.e(TAG, "Failed to establish VPN - stopping service")
@@ -116,7 +124,7 @@ class PaqetNGVpnService : VpnService() {
                 return@launch
             }
             withContext(Dispatchers.IO) {
-                startTun2Socks(socksPort)
+                startTun2Socks(socksPort, fakeDns)
             }
             // Update notification to "VPN connected"; notify Quick Settings tile
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -164,20 +172,32 @@ class PaqetNGVpnService : VpnService() {
         vpnInterface = null
     }
 
-    private fun establishVpn(splitMode: String = "disabled", splitApps: Set<String> = emptySet()): Boolean {
+    private fun establishVpn(
+        splitMode: String = "disabled",
+        splitApps: Set<String> = emptySet(),
+        fakeDns: Boolean = true,
+        remoteDns: String = SettingsRepository.DEFAULT_REMOTE_DNS
+    ): Boolean {
         return try {
             val builder = Builder()
                 .setSession(getString(R.string.app_name))
                 .setMtu(1500)
-                .addAddress("10.0.0.2", 30)
+                .addAddress("10.0.0.2", 24)
                 .addAddress("fd00::2", 64)
                 .addRoute("0.0.0.0", 0)
                 .addRoute("::", 0)
-                .addDnsServer("8.8.8.8")
-                .addDnsServer("8.8.4.4")
-                .addDnsServer("2001:4860:4860::8888")
-                .addDnsServer("2001:4860:4860::8844")
-                .setBlocking(false)
+
+            if (fakeDns) {
+                builder.addDnsServer(Tun2SocksRunner.FAKE_DNS_IP)
+            } else {
+                builder.addDnsServer(remoteDns.ifBlank { SettingsRepository.DEFAULT_REMOTE_DNS })
+                if (remoteDns != "8.8.8.8" && remoteDns != "1.1.1.1") {
+                    builder.addDnsServer("1.1.1.1")
+                }
+                builder.addDnsServer("2606:4700:4700::1111")
+                builder.addDnsServer("2001:4860:4860::8888")
+            }
+            builder.setBlocking(false)
             // Split tunneling
             val effectiveMode = when (splitMode) {
                 "bypass", "only" -> if (splitApps.isEmpty()) "disabled" else splitMode
@@ -223,19 +243,19 @@ class PaqetNGVpnService : VpnService() {
         }
     }
 
-    private fun startTun2Socks(socksPort: Int) {
+    private fun startTun2Socks(socksPort: Int, fakeDns: Boolean = true) {
         val pfd = vpnInterface ?: return
         val fd = pfd.fd
         if (fd < 0) {
             Log.e(TAG, "Invalid VPN fd=$fd - TUN mode will not work")
             return
         }
-        Log.i(TAG, "Starting tun2socks fd=$fd socksPort=$socksPort")
-        tun2Socks = Tun2SocksRunner(this, socksPort)
+        Log.i(TAG, "Starting tun2socks fd=$fd socksPort=$socksPort fakeDns=$fakeDns")
+        tun2Socks = Tun2SocksRunner(this, socksPort, fakeDns)
         if (!tun2Socks!!.start(fd)) {
             Log.e(TAG, "tun2socks failed to start - TUN traffic will not be routed to SOCKS. Ensure libhev-socks5-tunnel.so is in jniLibs.")
         } else {
-            Log.i(TAG, "tun2socks started; TUN mode active")
+            Log.i(TAG, "tun2socks started; TUN mode active (fakeDns=$fakeDns)")
         }
     }
 
@@ -311,6 +331,8 @@ class PaqetNGVpnService : VpnService() {
         const val EXTRA_SOCKS_PORT = "socks_port"
         const val EXTRA_SPLIT_MODE = "split_mode"
         const val EXTRA_SPLIT_APPS = "split_apps"
+        const val EXTRA_FAKE_DNS = "fake_dns"
+        const val EXTRA_REMOTE_DNS = "remote_dns"
         private const val DEFAULT_PORT = 1284
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "vpn_channel"

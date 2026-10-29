@@ -249,20 +249,24 @@ class MainActivity : ComponentActivity() {
             kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
                 val splitMode = settingsRepository.splitMode.first()
                 val splitApps = settingsRepository.splitApps.first()
+                val fakeDns = settingsRepository.fakeDns.first()
+                val remoteDns = settingsRepository.remoteDns.first()
                 val runnable = Runnable {
-                    logBuffer.append(AppLogBuffer.TAG_VPN, "VPN starting port=${config.socksPort()} config=${config.name.ifEmpty { config.serverAddr }} mode=$splitMode apps=${splitApps.size}")
+                    logBuffer.append(AppLogBuffer.TAG_VPN, "VPN starting port=${config.socksPort()} config=${config.name.ifEmpty { config.serverAddr }} mode=$splitMode apps=${splitApps.size} fakeDns=$fakeDns remoteDns=$remoteDns")
                     val intent = Intent(this@MainActivity, PaqetNGVpnService::class.java)
-                    .putExtra(PaqetNGVpnService.EXTRA_SOCKS_PORT, config.socksPort())
-                    .putExtra(PaqetNGVpnService.EXTRA_SPLIT_MODE, splitMode)
-                    .putStringArrayListExtra(PaqetNGVpnService.EXTRA_SPLIT_APPS, ArrayList(splitApps))
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(intent)
-                } else {
-                    startService(intent)
+                        .putExtra(PaqetNGVpnService.EXTRA_SOCKS_PORT, config.socksPort())
+                        .putExtra(PaqetNGVpnService.EXTRA_SPLIT_MODE, splitMode)
+                        .putStringArrayListExtra(PaqetNGVpnService.EXTRA_SPLIT_APPS, ArrayList(splitApps))
+                        .putExtra(PaqetNGVpnService.EXTRA_FAKE_DNS, fakeDns)
+                        .putExtra(PaqetNGVpnService.EXTRA_REMOTE_DNS, remoteDns)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(intent)
+                    } else {
+                        startService(intent)
+                    }
+                    // Clear the reference after execution to allow cancellation if needed
+                    pendingVpnStartRunnable = null
                 }
-                // Clear the reference after execution to allow cancellation if needed
-                pendingVpnStartRunnable = null
-            }
             pendingVpnStartRunnable = runnable
             mainHandler.postDelayed(runnable, 800)
             }

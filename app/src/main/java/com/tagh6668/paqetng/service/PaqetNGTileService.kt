@@ -166,10 +166,14 @@ class PaqetNGTileService : TileService() {
             mainHandler.postDelayed({
                 val splitMode = runBlocking { settingsRepo.splitMode.first() }
                 val splitApps = runBlocking { settingsRepo.splitApps.first() }
+                val fakeDns = runBlocking { settingsRepo.fakeDns.first() }
+                val remoteDns = runBlocking { settingsRepo.remoteDns.first() }
                 val intent = Intent(applicationContext, PaqetNGVpnService::class.java)
                     .putExtra(PaqetNGVpnService.EXTRA_SOCKS_PORT, config.socksPort())
                     .putExtra(PaqetNGVpnService.EXTRA_SPLIT_MODE, splitMode)
                     .putStringArrayListExtra(PaqetNGVpnService.EXTRA_SPLIT_APPS, ArrayList(splitApps))
+                    .putExtra(PaqetNGVpnService.EXTRA_FAKE_DNS, fakeDns)
+                    .putExtra(PaqetNGVpnService.EXTRA_REMOTE_DNS, remoteDns)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     applicationContext.startForegroundService(intent)
                 } else {
