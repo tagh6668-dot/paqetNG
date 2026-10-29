@@ -15,20 +15,23 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import java.io.BufferedReader
 import java.io.File
-import java.net.HttpURLConnection
+import java.io.InputStreamReader
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.ServerSocket
 import java.net.Socket
-import java.net.URL
 import java.util.Collections
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 
 /**
  * Parallel "real delay" tester that runs paqet binaries in isolated temp dirs.
  * Does NOT touch the main PaqetRunner, so the active VPN/SOCKS session is never interrupted.
- * Concurrency = 10. Each tester gets its own SOCKS port and temp dir/binary copy.
+ * Uses shared paqet binary execution and direct SOCKS5 remote DNS probing to bypass
+ * local DNS poisoning (RFC 2544 unroutable fake IPs).
  */
 class RealDelayTester(
     private val context: Context,
@@ -36,7 +39,7 @@ class RealDelayTester(
 ) {
     companion object {
         private const val TAG = "RealDelayTester"
-        const val CONCURRENCY = 10
+        const val CONCURRENCY = 3
         const val TEST_PORT_START = 28000
     }
 
@@ -57,7 +60,8 @@ class RealDelayTester(
         val port: Int,
         val dir: File,
         val process: Process?,
-        val antiRstPort: Int?
+        val antiRstPort: Int?,
+        val cfgFile: File
     )
 
     fun cancel() {
@@ -68,8 +72,7 @@ class RealDelayTester(
                 try { killHandle(h) } catch (_: Exception) {}
             }
             activeHandles.clear()
-        // Clean orphaned temp dirs from previous crash
-        try { cleanupOrphanedDirs() } catch (_: Exception) {}
+            try { cleanupOrphanedDirs() } catch (_: Exception) {}
         }
         _testingIds.value = emptySet()
         Log.d(TAG, "cancelled")
@@ -103,24 +106,28 @@ class RealDelayTester(
         val ports = allocatePorts(configs.size)
 
         val semaphore = Semaphore(CONCURRENCY)
-        coroutineScope {
-            val jobs = configs.mapIndexed { idx, cfg ->
-                async(Dispatchers.IO) {
-                    semaphore.withPermit {
-                        if (cancelled) return@withPermit
-                        _testingIds.update { it + cfg.id }
-                        val port = ports[idx]
-                        val ms = runOne(cfg, port, netInfo, checkUrl, timeout, logLevel, allowLan)
-                        if (!cancelled) _results.update { it + (cfg.id to ms) }
-                        _testingIds.update { it - cfg.id }
-                        Log.d(TAG, "${cfg.serverAddr}:$port -> ${ms}ms")
+        try {
+            coroutineScope {
+                val jobs = configs.mapIndexed { idx, cfg ->
+                    async(Dispatchers.IO) {
+                        semaphore.withPermit {
+                            if (cancelled) return@withPermit
+                            _testingIds.update { it + cfg.id }
+                            val port = ports[idx]
+                            val ms = runOne(cfg, port, netInfo, checkUrl, timeout, logLevel, allowLan)
+                            if (!cancelled) _results.update { it + (cfg.id to ms) }
+                            _testingIds.update { it - cfg.id }
+                            Log.d(TAG, "${cfg.serverAddr}:$port -> ${ms}ms")
+                        }
                     }
                 }
+                jobs.awaitAll()
             }
-            jobs.awaitAll()
+        } finally {
+            _isTesting.value = false
+            _testingIds.value = emptySet()
+            Log.d(TAG, "done results=${_results.value}")
         }
-        _isTesting.value = false
-        Log.d(TAG, "done results=${_results.value}")
     }
 
     private fun normalizeCheckUrl(raw: String): String {
@@ -137,11 +144,8 @@ class RealDelayTester(
             if (isPortFree(candidate)) out.add(candidate)
             candidate++
             if (candidate == 1284) candidate = 1285
-            // avoid reusing same port within this batch
-            // isPortFree already ensures not bound; but also avoid duplicates in out
         }
         while (out.size < n) {
-            // fallback: find random free
             var p = TEST_PORT_START + (out.size * 7 % 2000)
             var tries = 0
             while (!isPortFree(p) && tries < 50) { p++; tries++ }
@@ -197,27 +201,82 @@ class RealDelayTester(
         }
     }
 
+    /**
+     * Public helper to probe SOCKS port directly using remote DNS resolution.
+     * Can be reused by HomeViewModel.testLatency without code duplication.
+     */
+    fun probeViaSocksDirect(port: Int, checkUrl: String, timeoutMs: Int): Int {
+        return probeViaSocks(port, checkUrl, timeoutMs)
+    }
+
     private fun probeViaSocks(port: Int, checkUrl: String, timeoutMs: Int): Int {
-        return try {
-            val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port))
-            val url = URL(checkUrl)
-            val conn = url.openConnection(proxy) as HttpURLConnection
-            try {
-                conn.requestMethod = "GET"
-                conn.connectTimeout = timeoutMs
-                conn.readTimeout = timeoutMs
-                conn.instanceFollowRedirects = true
+        val uri = try { java.net.URI(checkUrl) } catch (_: Exception) { null }
+        val host = uri?.host?.takeIf { it.isNotBlank() } ?: "www.gstatic.com"
+        val path = if (!uri?.rawPath.isNullOrEmpty()) {
+            if (uri?.rawQuery != null) "${uri.rawPath}?${uri.rawQuery}" else uri.rawPath
+        } else "/generate_204"
+        val isExplicitHttps = uri?.scheme.equals("https", ignoreCase = true)
+        val explicitPort = if (uri != null && uri.port > 0) uri.port else null
+        val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port))
+
+        fun tryConnect(useHttps: Boolean, targetPort: Int, currentTimeout: Int): Int {
+            return try {
                 val start = System.currentTimeMillis()
-                conn.connect()
-                val code = conn.responseCode
-                Log.d(TAG, "probe :$port code=$code")
-                (System.currentTimeMillis() - start).toInt()
-            } finally {
-                conn.disconnect()
+                val rawSocket = Socket(proxy)
+                rawSocket.soTimeout = currentTimeout
+                // Critical: InetSocketAddress.createUnresolved forces SOCKS5 client to send ATYP=0x03
+                // (domain name) instead of ATYP=0x01 (IPv4). This completely circumvents local Android
+                // DNS poisoning which returns unroutable RFC 2544 fake IPs (e.g. 198.19.x.x) on cellular.
+                rawSocket.connect(InetSocketAddress.createUnresolved(host, targetPort), currentTimeout)
+
+                val socket = if (useHttps) {
+                    val sslFactory = SSLSocketFactory.getDefault() as SSLSocketFactory
+                    val sslSocket = sslFactory.createSocket(rawSocket, host, targetPort, true) as SSLSocket
+                    sslSocket.soTimeout = currentTimeout
+                    sslSocket.startHandshake()
+                    sslSocket
+                } else {
+                    rawSocket
+                }
+
+                socket.use { s ->
+                    val out = s.getOutputStream()
+                    val req = "GET $path HTTP/1.1\r\nHost: $host\r\nConnection: close\r\nUser-Agent: Mozilla/5.0\r\n\r\n"
+                    out.write(req.toByteArray(Charsets.US_ASCII))
+                    out.flush()
+
+                    val reader = BufferedReader(InputStreamReader(s.getInputStream(), Charsets.US_ASCII))
+                    val statusLine = reader.readLine()
+                    if (statusLine != null && (statusLine.startsWith("HTTP/1.") || statusLine.startsWith("HTTP/2"))) {
+                        val delay = (System.currentTimeMillis() - start).toInt()
+                        Log.d(TAG, "probe :$port success [https=$useHttps, port=$targetPort] ($statusLine) in ${delay}ms")
+                        delay
+                    } else {
+                        Log.w(TAG, "probe :$port invalid response: $statusLine")
+                        -1
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "probe :$port [https=$useHttps, port=$targetPort] failed: ${e.message}")
+                -1
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "probe failed :$port", e)
-            -1
+        }
+
+        return if (isExplicitHttps) {
+            val targetPort = explicitPort ?: 443
+            val res = tryConnect(true, targetPort, timeoutMs)
+            if (res > 0) res
+            else if (targetPort == 443) {
+                val fallbackTimeout = (timeoutMs / 2).coerceAtLeast(2000)
+                val fallbackRes = tryConnect(false, 80, fallbackTimeout)
+                if (fallbackRes > 0) {
+                    Log.d(TAG, "probe :$port HTTP fallback succeeded in ${fallbackRes}ms")
+                    fallbackRes
+                } else -1
+            } else -1
+        } else {
+            val targetPort = explicitPort ?: 80
+            tryConnect(false, targetPort, timeoutMs)
         }
     }
 
@@ -233,31 +292,23 @@ class RealDelayTester(
         return false
     }
 
-    private fun ensureBinaryCopy(dstDir: File): File? {
+    private fun getSharedBinary(): File? {
         val srcBin = File(File(context.filesDir, "paqet"), "paqet")
-        return try {
-            val dst = File(dstDir, "paqet")
-            if (srcBin.exists() && srcBin.canExecute()) {
-                dst.parentFile?.mkdirs()
-                srcBin.copyTo(dst, overwrite = true)
-                dst.setExecutable(true)
-                dst
-            } else {
-                val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: ""
-                val candidates = listOf("$abi/paqet", "paqet")
-                var ok = false
-                for (asset in candidates) {
-                    try {
-                        context.assets.open(asset).use { input ->
-                            dst.parentFile?.mkdirs()
-                            dst.outputStream().use { out -> input.copyTo(out) }
-                        }
-                        dst.setExecutable(true); ok = true; break
-                    } catch (_: Exception) {}
+        if (srcBin.exists() && srcBin.canExecute()) return srcBin
+        val dir = File(context.filesDir, "paqet")
+        dir.mkdirs()
+        val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: ""
+        val candidates = listOf("$abi/paqet", "paqet")
+        for (asset in candidates) {
+            try {
+                context.assets.open(asset).use { input ->
+                    srcBin.outputStream().use { out -> input.copyTo(out) }
                 }
-                if (ok) dst else null
-            }
-        } catch (_: Exception) { null }
+                srcBin.setExecutable(true)
+                return srcBin
+            } catch (_: Exception) {}
+        }
+        return if (srcBin.exists() && srcBin.canExecute()) srcBin else null
     }
 
     private fun startIsolatedPaqet(config: PaqetConfig, yaml: String, port: Int): TesterHandle? {
@@ -265,7 +316,7 @@ class RealDelayTester(
         dir.mkdirs()
         val cfgFile = File(dir, "config.yaml")
         try { cfgFile.writeText(yaml) } catch (_: Exception) { return null }
-        val bin = ensureBinaryCopy(dir) ?: run { try { dir.deleteRecursively() } catch (_: Exception) {}; return null }
+        val bin = getSharedBinary() ?: run { try { dir.deleteRecursively() } catch (_: Exception) {}; return null }
         val rawPort = parseServerPortFromYaml(yaml)
         if (rawPort != null) installAntiRst(rawPort)
         val proc = try {
@@ -280,29 +331,28 @@ class RealDelayTester(
             return null
         }
         Thread { try { proc.inputStream.bufferedReader().forEachLine { } } catch (_: Exception) {} }.apply { isDaemon = true; start() }
-        return TesterHandle(config.id, port, dir, proc, rawPort)
+        return TesterHandle(config.id, port, dir, proc, rawPort, cfgFile)
     }
 
     private fun killHandle(h: TesterHandle) {
         try { h.process?.destroy() } catch (_: Exception) {}
         try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) h.process?.waitFor(800, TimeUnit.MILLISECONDS)
-            else { val t = Thread { h.process?.waitFor() }; t.start(); t.join(800) }
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) h.process?.waitFor(500, TimeUnit.MILLISECONDS)
+            else { val t = Thread { h.process?.waitFor() }; t.start(); t.join(500) }
         } catch (_: Exception) {}
         try { if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) h.process?.destroyForcibly() } catch (_: Exception) {}
         try {
-            val binPath = File(h.dir, "paqet").absolutePath.replace("'", "'\\''")
-            ProcessBuilder("su", "-c", "pkill -9 -f '$binPath' || true").redirectErrorStream(true).start().let { p ->
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) p.waitFor(700, TimeUnit.MILLISECONDS) else { val t = Thread { p.waitFor() }; t.start(); t.join(700) }
+            val cfgPath = h.cfgFile.absolutePath.replace("'", "'\\''")
+            ProcessBuilder("su", "-c", "pkill -9 -f '$cfgPath' || true").redirectErrorStream(true).start().let { p ->
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) p.waitFor(500, TimeUnit.MILLISECONDS) else { val t = Thread { p.waitFor() }; t.start(); t.join(500) }
                 p.destroy()
             }
         } catch (_: Exception) {}
         if (h.antiRstPort != null) removeAntiRst(h.antiRstPort)
         try { h.dir.deleteRecursively() } catch (_: Exception) {}
-        try { Thread.sleep(60) } catch (_: Exception) {}
     }
 
-    // Ref-counted anti-RST so parallel testers sharing same server port don't delete each other's rule (Bug #8)
+    // Ref-counted anti-RST so parallel testers sharing same server port don't delete each other's rule
     private val antiRstRefCount = mutableMapOf<Int, Int>()
     private val antiRstLock = Any()
 
@@ -320,6 +370,7 @@ class RealDelayTester(
             runSu(cmd)
         }
     }
+
     private fun removeAntiRst(port: Int) {
         val shouldRemove = synchronized(antiRstLock) {
             val c = (antiRstRefCount[port] ?: 1) - 1
@@ -337,6 +388,7 @@ class RealDelayTester(
             runSu(cmd)
         }
     }
+
     private fun runSu(cmd: String) {
         try {
             val p = ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
@@ -377,7 +429,7 @@ class RealDelayTester(
         } catch (_: Exception) { null }
     }
 
-    /** Delete orphaned paqet_test_* dirs left from previous crash (Bug #8 disk). Call on app start if needed. */
+    /** Delete orphaned paqet_test_* dirs left from previous crash. Call on app start if needed. */
     fun cleanupOrphanedDirs() {
         try {
             context.filesDir.listFiles()?.filter { it.isDirectory && it.name.startsWith("paqet_test_") }?.forEach {

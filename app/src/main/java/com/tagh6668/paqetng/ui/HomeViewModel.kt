@@ -24,10 +24,6 @@ import kotlinx.coroutines.Job
 import android.content.Context
 import android.util.Log
 import com.tagh6668.paqetng.paqet.RealDelayTester
-import java.net.HttpURLConnection
-import java.net.InetSocketAddress
-import java.net.Proxy
-import java.net.URL
 
 class HomeViewModel(
     private val configRepository: ConfigRepository,
@@ -272,29 +268,10 @@ class HomeViewModel(
             Log.d(TAG, "testLatency: connection check URL=$checkUrl via SOCKS 127.0.0.1:${config.socksPort()}")
             val socksPort = config.socksPort()
             val ms = withContext(Dispatchers.IO) {
-                runCatching {
-                    val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", socksPort))
-                    val url = URL(checkUrl)
-                    val conn = url.openConnection(proxy) as? HttpURLConnection ?: return@runCatching null
-                    try {
-                        conn.requestMethod = "GET"
-                        conn.connectTimeout = 10_000
-                        conn.readTimeout = 10_000
-                        conn.instanceFollowRedirects = true
-                        val start = System.currentTimeMillis()
-                        conn.connect()
-                        conn.responseCode
-                        (System.currentTimeMillis() - start).toInt()
-                    } finally {
-                        conn.disconnect()
-                    }
-                }.getOrElse { e: Throwable ->
-                    Log.w(TAG, "testLatency: connection check failed (via proxy)", e)
-                    null
-                }
+                realDelayTester.probeViaSocksDirect(socksPort, checkUrl, 10_000)
             }
             Log.d(TAG, "testLatency: result ms=$ms, setting _latencyMs and latencyTesting=false")
-            _latencyMs.value = ms ?: -1
+            _latencyMs.value = ms
             _latencyTesting.value = false
         }
     }
