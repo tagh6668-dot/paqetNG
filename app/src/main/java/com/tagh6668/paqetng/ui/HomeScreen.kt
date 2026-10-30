@@ -298,8 +298,12 @@ fun HomeScreen(
                         viewModel.testLatency(selectedConfig)
                     },
                     onConnect = {
-                        if (onConnect != null) onConnect(selectedConfig)
-                        else viewModel.connect(selectedConfig)
+                        if (selectedConfig == null) {
+                            android.widget.Toast.makeText(context, "No configuration selected", android.widget.Toast.LENGTH_SHORT).show()
+                        } else {
+                            if (onConnect != null) onConnect(selectedConfig)
+                            else viewModel.connect(selectedConfig)
+                        }
                     },
                     onDisconnect = onDisconnect ?: viewModel::disconnect
                 )

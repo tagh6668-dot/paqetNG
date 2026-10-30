@@ -215,7 +215,8 @@ class HomeViewModel(
      */
     fun connect(config: PaqetConfig?, onPaqetStarted: (() -> Unit)? = null) {
         if (config == null) return
-        viewModelScope.launch {
+        _connectedConfigId.value = config.id
+        viewModelScope.launch(Dispatchers.IO) {
             val allowLan = settingsRepository.socksListenLan.first()
             val logLevel = settingsRepository.logLevel.first()
             val port = config.socksPort()
@@ -233,13 +234,27 @@ class HomeViewModel(
                 config.copy(socksListen = socksListen)
             })
             val summary = "server=${configWithNetwork.serverAddr} iface=${configWithNetwork.networkInterface} ip=${configWithNetwork.ipv4Addr} ipv6=${configWithNetwork.ipv6Addr} routerMac=${configWithNetwork.routerMac} socks=${configWithNetwork.socksListen}"
-            val yaml = try { configWithNetwork.toPaqetYaml(logLevel = logLevel) } catch (e: IllegalStateException) { android.util.Log.e(TAG, "YAML error", e); return@launch }
+            val yaml = try {
+                configWithNetwork.toPaqetYaml(logLevel = logLevel)
+            } catch (e: Exception) {
+                Log.e(TAG, "YAML error", e)
+                withContext(Dispatchers.Main) {
+                    _connectedConfigId.value = null
+                    android.widget.Toast.makeText(context, "Config error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                }
+                return@launch
+            }
             val started = paqetRunner.startWithYaml(yaml, summary, configWithNetwork.serverPort())
             if (started) {
                 _connectedConfigId.value = config.id
-                onPaqetStarted?.invoke()
+                withContext(Dispatchers.Main) {
+                    onPaqetStarted?.invoke()
+                }
             } else {
                 _connectedConfigId.value = null
+                withContext(Dispatchers.Main) {
+                    android.widget.Toast.makeText(context, "Failed to start paqet core. Please check root access.", android.widget.Toast.LENGTH_LONG).show()
+                }
             }
         }
     }

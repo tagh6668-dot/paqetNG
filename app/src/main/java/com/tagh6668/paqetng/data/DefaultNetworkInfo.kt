@@ -37,6 +37,10 @@ class DefaultNetworkInfoProvider(private val context: Context) {
         // Prefer LinkProperties (works well for WiFi); on cellular it often returns null.
         cm.getLinkProperties(network)?.let { lp ->
             val interfaceName = lp.interfaceName?.takeIf { it.isNotBlank() } ?: "wlan0"
+            if (interfaceName.startsWith("tun") || interfaceName.startsWith("dummy") || interfaceName == "lo") {
+                Log.d(TAG, "Active network interface is virtual ($interfaceName) - delegating to root physical probe")
+                return@withContext getDefaultNetworkInfoViaRoot()
+            }
             val ipv4 = lp.linkAddresses
                 .mapNotNull { la -> la.address }
                 .filterIsInstance<Inet4Address>()

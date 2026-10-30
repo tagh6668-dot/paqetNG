@@ -75,6 +75,8 @@ class MainActivity : ComponentActivity() {
         pendingConnectConfig = null
         if (result.resultCode == RESULT_OK && config != null) {
             doConnect(config)
+        } else if (config != null) {
+            android.widget.Toast.makeText(this, "VPN permission denied", android.widget.Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -144,7 +146,7 @@ class MainActivity : ComponentActivity() {
             // When user changes the selected profile while connected, restart paqet (and VPN) with the new profile
             LaunchedEffect(selectedConfigId, isRunning, connectedConfigId) {
                 val newConfig = selectedConfigId?.let { id -> configs.find { it.id == id } }
-                if (isRunning && newConfig != null && selectedConfigId != connectedConfigId) {
+                if (isRunning && connectedConfigId != null && newConfig != null && selectedConfigId != connectedConfigId) {
                     handleDisconnect()
                     handleConnect(newConfig, connectionMode)
                 }
@@ -212,7 +214,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleConnect(config: PaqetConfig?, connectionMode: String) {
-        if (config == null) return
+        if (config == null) {
+            android.widget.Toast.makeText(this, "Please select a profile first", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
         logBuffer.clear()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission()) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
