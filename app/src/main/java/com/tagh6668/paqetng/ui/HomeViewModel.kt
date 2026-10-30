@@ -240,7 +240,7 @@ class HomeViewModel(
                 Log.e(TAG, "YAML error", e)
                 withContext(Dispatchers.Main) {
                     _connectedConfigId.value = null
-                    android.widget.Toast.makeText(context, "Config error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                    android.widget.Toast.makeText(appContext, "Config error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
                 }
                 return@launch
             }
@@ -253,7 +253,7 @@ class HomeViewModel(
             } else {
                 _connectedConfigId.value = null
                 withContext(Dispatchers.Main) {
-                    android.widget.Toast.makeText(context, "Failed to start paqet core. Please check root access.", android.widget.Toast.LENGTH_LONG).show()
+                    android.widget.Toast.makeText(appContext, "Failed to start paqet core. Please check root access.", android.widget.Toast.LENGTH_LONG).show()
                 }
             }
         }
